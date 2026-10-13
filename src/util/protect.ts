@@ -56,7 +56,11 @@ function maskVisible(input: string): string {
   //    URL の中では / をパスの区切りとして扱い、区切りごとに判定する（https://claude.ai/artifact/<id> の <id> だけを伏せる）
   s = s.replace(/(sha(?:256|384|512)-)?([A-Za-z0-9+/_=-]{16,})/g, (m: string, sri: string | undefined, token: string, offset: number, whole: string) => {
     if (sri) return m;
-    if (token.includes('/') && inUrlBefore(whole, offset)) return token.split('/').map((seg) => (looksRandom(seg) ? MASK : seg)).join('/');
+    // URL の中や、単語が大半を占めるパス（/private/var/folders/…/T/agentscope-test-Ab3dE5/…）は、/ の区切りごとに判定する。
+    // 単語をほとんど含まない / 入りの値（AWS のシークレットキーや base64）は、全体を1つの値として判定する
+    if (token.includes('/') && (looksLikePath(token) || inUrlBefore(whole, offset))) {
+      return token.split('/').map((seg) => (looksRandom(seg) ? MASK : seg)).join('/');
+    }
     return looksRandom(token) ? MASK : m;
   });
   // 5. curl -u user:pass
@@ -75,6 +79,15 @@ function inUrlBefore(whole: string, offset: number): boolean {
   let start = offset;
   while (start > limit && !/\s/.test(whole[start - 1]!)) start--;
   return whole.slice(start, offset).includes('://');
+}
+
+/** / で区切った断片を、さらに - _ . で分けたとき、単語（2 文字以上の英小文字、先頭だけ大文字の単語）が文字数の 4 割以上を占めるか */
+export function looksLikePath(token: string): boolean {
+  const pieces = token.split(/[/\-_.]/).filter(Boolean);
+  const total = pieces.reduce((n, p) => n + p.length, 0);
+  if (total === 0) return false;
+  const wordy = pieces.filter((p) => /^[A-Z]?[a-z]{2,}$/.test(p)).reduce((n, p) => n + p.length, 0);
+  return wordy / total >= 0.4;
 }
 
 /** 1文字あたりのシャノンエントロピー（ビット） */

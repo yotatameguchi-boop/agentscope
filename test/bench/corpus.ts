@@ -183,5 +183,13 @@ export function negatives(seed = 2): Array<{ kind: string; text: string }> {
     n('hash-flag', `--expected-sha256 ${gen(r, HEX, 64)}`),
     n('long-kebab', 'claude-code-security-review-github-action-workflow-v2'),
     n('rule-description', 'Bash(git log --oneline --since=2024-01-01 --author=yota)'),
+    // CI の macOS で見つかった誤検知（一時ディレクトリのパス）と、その仲間
+    n('macos-tmp-path', `/private/var/folders/${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789_', 2)}/${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789_', 28)}/T/agentscope-test-${gen(r, ALNUM, 6)}/com.anthropic.claudecode.plist`),
+    n('linux-tmp-path', `/tmp/tmp.${gen(r, ALNUM, 10)}/work/${gen(r, ALNUM, 8)}/settings.json`),
+    n('windows-tmp-path', `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\agentscope-test-${gen(r, ALNUM, 6)}\\.claude\\settings.json`),
+    n('pnpm-store-path', `node_modules/.pnpm/@types+node@26.6.5_${gen(r, HEX, 10)}/node_modules/@types/node/index.d.ts`),
+    n('nix-store-path', `/nix/store/${gen(r, 'abcdfghijklmnpqrsvwxyz0123456789', 32)}-nodejs-24.18.1/bin/node`),
+    n('go-mod-cache', `/home/runner/go/pkg/mod/github.com/aws/aws-sdk-go-v2@v1.32.${Math.floor(r() * 9)}/config/doc.go`),
+    n('vscode-extension-path', `~/.vscode/extensions/anthropic.claude-code-2.1.300-darwin-arm64/resources/${gen(r, ALNUM, 6)}/icon.svg`),
   ];
 }

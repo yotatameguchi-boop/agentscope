@@ -63,6 +63,18 @@ describe('1. 形式に特徴のない秘密情報', () => {
     expect(dump).not.toContain('correcthorsebatterystaple');
   });
 
+  it('一時ディレクトリのパスを伏せない（CI の macOS で見つかった誤検知。乱数を変えて 2,000 回試す）', () => {
+    const pick = (c: string, n: number, i: number) => Array.from({ length: n }, (_, k) => c[(i * 7919 + k * 104729) % c.length]).join('');
+    const lower = 'abcdefghijklmnopqrstuvwxyz0123456789_';
+    const alnum = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const bad: string[] = [];
+    for (let i = 0; i < 2000; i++) {
+      const p = `/private/var/folders/${pick(lower, 2, i)}/${pick(lower, 28, i + 1)}/T/agentscope-test-${pick(alnum, 6, i + 2)}/com.anthropic.claudecode.plist`;
+      if (maskSecrets(p) !== p) bad.push(p);
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('ランダム性の高い長い文字列は伏せ、ハッシュ・UUID・人が付けた名前は残す', () => {
     const token = 'aB3dE5fG7hJ9kL1mN2pQ4rS6tU8vW0xY';
     expect(looksRandom(token)).toBe(true);
