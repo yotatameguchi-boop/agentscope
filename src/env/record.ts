@@ -1,6 +1,6 @@
 import { tx, type Text } from '../i18n.js';
 import type { ConfigScope, PermissionSetting, SecretHit, SourceRef } from '../types.js';
-import { classifySecret, redactIfSecret } from '../util/secrets.js';
+import { classifySecret, parseVarRef, redactIfSecret } from '../util/secrets.js';
 import { ENV_CATALOG, READ_ONLY_ENV } from './catalog.js';
 
 /** 環境変数がどこから来たか。効く・効かないの判定に使う */
@@ -19,9 +19,19 @@ export interface EnvInput {
   writtenInFile: boolean;
 }
 
-/** $VAR や ${{ secrets.X }} のような参照。値そのものではないので評価しない */
+/**
+ * $VAR や ${{ secrets.X }} のような参照なら true。値そのものではないので評価しない。
+ * ${VAR:-既定値} は既定値が直接書かれているため参照とはみなさない（既定値を値として評価する）
+ */
 function isReference(v: string): boolean {
-  return /^\$\{?\{?\s*[A-Za-z_][\w.:-]*\s*\}?\}?$/.test(v.trim()) || /^\$\{\{.*\}\}$/.test(v.trim());
+  const ref = parseVarRef(v);
+  if (ref) return ref.fallback === undefined;
+  return /^\$\{\{.*\}\}$/s.test(v.trim()) || /^\$\{(?:env|input):[^}]+\}$/.test(v.trim());
+}
+
+/** 評価に使う値。${VAR:-既定値} なら既定値 */
+function effectiveValue(v: string): string {
+  return parseVarRef(v)?.fallback ?? v;
 }
 
 function urlForDisplay(v: string): string | undefined {
@@ -41,11 +51,12 @@ export function envToSetting(input: EnvInput): { setting?: PermissionSetting; se
   const spec = ENV_CATALOG[input.name];
   if (!spec || READ_ONLY_ENV.has(input.name)) return {};
 
+  const raw = effectiveValue(input.value);
   let value: string | Text;
   if (isReference(input.value)) value = tx('参照（値は不明）', 'reference (value unknown)');
   else if (spec.display === 'secret') value = tx('設定あり（値は表示しません）', 'set (value not shown)');
-  else if (spec.display === 'url') value = urlForDisplay(input.value) ?? tx('URL として解析できません', 'not a valid URL');
-  else value = redactIfSecret(input.value.trim());
+  else if (spec.display === 'url') value = urlForDisplay(raw) ?? tx('URL として解析できません', 'not a valid URL');
+  else value = redactIfSecret(raw.trim());
 
   const setting: PermissionSetting = {
     agent: spec.agent,
@@ -73,7 +84,7 @@ export function envToSetting(input: EnvInput): { setting?: PermissionSetting; se
     // 既知の形式（sk-ant- など）なら value-pattern、そうでなくても資格情報の変数なら key-name として扱う
     const hit =
       classifySecret(input.name, input.value) ??
-      (spec.display === 'secret' && input.value.trim().length >= 8 ? { kind: 'key-name' as const, label: tx(`「${input.name}」`, `Key "${input.name}"`) } : undefined);
+      (spec.display === 'secret' && raw.trim().length >= 8 ? { kind: 'key-name' as const, label: tx(`「${input.name}」`, `Key "${input.name}"`) } : undefined);
     if (hit) secret = { agent: spec.agent, file: input.source.file, pointer: input.source.pointer, ...hit };
   }
   return { setting, secret };

@@ -15,7 +15,7 @@ interface ValuePattern {
 
 // 既知の形式。誤検知を抑えるため、プレフィックスと十分な長さの両方を要求する。
 // 先頭は \b ではなく英数字以外を条件にする（mcp__xoxb-... のように _ の直後でも検出するため）
-const VALUE_PATTERNS: ValuePattern[] = [
+export const VALUE_PATTERNS: ValuePattern[] = [
   { label: tx('Anthropic APIキー', 'an Anthropic API key'), re: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}/ },
   { label: tx('OpenAI APIキー', 'an OpenAI API key'), re: /(?<![A-Za-z0-9])sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
   { label: tx('GitHub トークン', 'a GitHub token'), re: /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
@@ -40,13 +40,28 @@ const SECRET_KEY_RE_RAW =
   /(?:^|[_\-.])(?:api[_-]?key|apikey|secret|token|password|passwd|pwd|credential|credentials|private[_-]?key|access[_-]?key|auth|authorization|session[_-]?key|client[_-]?secret)(?:$|[_\-.])/i;
 
 /** camelCase のキー名（githubToken など）も区切りとして扱う */
-const SECRET_KEY_RE = { test: (key: string) => SECRET_KEY_RE_RAW.test(key.replace(/([a-z0-9])([A-Z])/g, '$1_$2')) };
+export const SECRET_KEY_RE = { test: (key: string) => SECRET_KEY_RE_RAW.test(key.replace(/([a-z0-9])([A-Z])/g, '$1_$2')) };
 
 // 秘密情報を直接書いていないとみなせる値（環境変数参照やプレースホルダー）
-function isReferenceOrPlaceholder(value: string): boolean {
+/**
+ * シェル形式の変数参照を分解する。$VAR / ${VAR} は参照だけ、${VAR:-値} / ${VAR-値} / ${VAR:=値} / ${VAR=値} は
+ * 「変数がなければこの値を使う」というリテラルの既定値を持つ。既定値は直接書かれた値として検査する必要がある。
+ */
+export function parseVarRef(value: string): { name: string; fallback?: string } | undefined {
   const v = value.trim();
+  const bare = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
+  if (bare) return { name: bare[1]! };
+  const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])(.*))?\}$/s.exec(v);
+  if (!braced) return undefined;
+  return braced[2] === undefined ? { name: braced[1]! } : { name: braced[1]!, fallback: braced[3]! };
+}
+
+export function isReferenceOrPlaceholder(value: string): boolean {
+  const v = value.trim();
+  const ref = parseVarRef(v);
+  // ${TOKEN:-abc...} は参照ではなく、既定値 abc... が直接書かれている
+  if (ref) return ref.fallback === undefined || isReferenceOrPlaceholder(ref.fallback);
   if (v.length < 8) return true; // 短すぎる値（"true", "1" など）は対象外
-  if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}?$/.test(v)) return true; // $VAR, ${VAR}, ${VAR:-x}
   if (/^\$\{(?:env|input):[^}]+\}$/.test(v)) return true; // Cursor/VS Code の ${env:VAR}, ${input:id}
   if (/^Bearer\s+\$\{?[A-Za-z_][\w:]*\}?$/i.test(v)) return true;
   if (/^<[^>]+>$/.test(v)) return true; // <YOUR_TOKEN>
@@ -60,6 +75,15 @@ function matchValuePattern(value: string): Text | undefined {
   return undefined;
 }
 
+/** 壊れた % エンコードでも例外を投げずにデコードする（失敗したら元の文字列を返す） */
+export function safeDecode(v: string): string {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+}
+
 /** URL にユーザー情報（user:pass@）やトークン系クエリが含まれるか */
 function hasUrlCredential(value: string): boolean {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false;
@@ -69,7 +93,7 @@ function hasUrlCredential(value: string): boolean {
   } catch {
     return false;
   }
-  if (u.password && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(decodeURIComponent(u.password))) return true;
+  if (u.password && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(safeDecode(u.password))) return true;
   for (const [k, v] of u.searchParams) {
     if (SECRET_KEY_RE.test(k) && !isReferenceOrPlaceholder(v)) return true;
   }

@@ -137,7 +137,9 @@ function readFlags(args: string[], variadic: Set<string>, single: Set<string>): 
   const out: FlagArg[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (!a.startsWith('-') || a === '-' || a === '--') continue;
+    // "--" はオプションの終わり。以降は位置引数（プロンプトなど）として扱い、オプションとして読まない
+    if (a === '--') break;
+    if (!a.startsWith('-') || a === '-') continue;
     const eq = a.indexOf('=');
     const flag = eq > 0 && a.startsWith('--') ? a.slice(0, eq) : a;
     const inline = eq > 0 && a.startsWith('--') ? a.slice(eq + 1) : undefined;
@@ -200,7 +202,9 @@ export async function parseLaunch(words: string[], opts: LaunchOptions): Promise
 
 async function parseClaudeFlags(args: string[], opts: LaunchOptions, ctx: ParseContext, out: LaunchParsed, at: (s: string) => string) {
   const setting = (key: string, value: string | Text, pointer: string) => {
-    const s: PermissionSetting = { agent: 'claude-code', scope: 'cli', key, value, source: { file: ctx.file, pointer }, status: 'active', launchId: opts.launchId };
+    // 起動コマンドの値は利用者が自由に書けるため、表示用に保持する前に必ず伏せ字処理を通す
+    const shown = typeof value === 'string' ? redactIfSecret(value) : value;
+    const s: PermissionSetting = { agent: 'claude-code', scope: 'cli', key, value: shown, source: { file: ctx.file, pointer }, status: 'active', launchId: opts.launchId };
     out.settings.push(s);
   };
   const option = (flag: string, value?: string) => out.launch.options.push(value === undefined ? { flag } : { flag, value: redactIfSecret(value) });
@@ -327,7 +331,19 @@ async function parseEmbedded(value: string, kind: 'settings' | 'mcp', opts: Laun
     out.unparsed.push({ agent: 'claude-code', file: ctx.file, pointer, reason: json.reason });
     return;
   }
-  const parsed = kind === 'settings' ? parseClaudeSettings(ctx, json.value) : parseClaudeMcpJson(ctx, json.value);
+  let parsed: ParsedConfig;
+  try {
+    parsed = kind === 'settings' ? parseClaudeSettings(ctx, json.value) : parseClaudeMcpJson(ctx, json.value);
+  } catch {
+    // 通常の設定ファイルと同じく、想定外の入力でも起動コマンド全体の解析は止めない。例外の内容は出さない
+    out.unparsed.push({
+      agent: 'claude-code',
+      file: ctx.file,
+      pointer,
+      reason: tx('解析中に予期しないエラーが発生したため、この項目は分析していません', 'An unexpected error occurred while parsing, so this item was not analyzed'),
+    });
+    return;
+  }
   // ポインタを「起動コマンドの位置 › JSON 内の位置」にそろえる
   const rebase = (p: string) => `${pointer} › ${p}`;
   for (const r of parsed.rules) out.rules.push({ ...r, source: { ...r.source, pointer: rebase(r.source.pointer) }, launchId: opts.launchId });
@@ -344,9 +360,10 @@ async function parseEmbedded(value: string, kind: 'settings' | 'mcp', opts: Laun
 const CURSOR_VALUE = new Set(['--sandbox', '--workspace', '--model', '--output-format', '--api-key', '--resume', '-H', '--header']);
 
 function parseCursorFlags(args: string[], ctx: ParseContext, out: LaunchParsed, at: (s: string) => string) {
+  // 起動コマンドの値は利用者が自由に書けるため、表示用に保持する前に必ず伏せ字処理を通す
   const setting = (key: string, value: string, pointer: string) =>
-    out.settings.push({ agent: 'cursor', scope: 'cli', key, value, source: { file: ctx.file, pointer }, status: 'active', launchId: out.launch.launchId });
-  const option = (flag: string, value?: string) => out.launch.options.push(value === undefined ? { flag } : { flag, value });
+    out.settings.push({ agent: 'cursor', scope: 'cli', key, value: redactIfSecret(value), source: { file: ctx.file, pointer }, status: 'active', launchId: out.launch.launchId });
+  const option = (flag: string, value?: string) => out.launch.options.push(value === undefined ? { flag } : { flag, value: redactIfSecret(value) });
 
   for (const { flag, values } of readFlags(args, new Set(), CURSOR_VALUE)) {
     const v = values[0];

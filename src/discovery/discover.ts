@@ -13,6 +13,8 @@ export interface Candidate {
   confineTo?: string;
   /** unsupported のときの説明 */
   unsupportedReason?: Text;
+  /** 管理設定の合成順（大きいほど後に合成され、単一値で勝つ） */
+  mergeOrder?: number;
 }
 
 export interface DiscoverOptions {
@@ -70,24 +72,28 @@ export async function discoverCandidates(opts: DiscoverOptions): Promise<Candida
 }
 
 /**
- * Claude Code の管理設定。managed-settings.json と managed-settings.d/*.json（名前順にマージ）、managed-mcp.json。
+ * Claude Code の管理設定。managed-settings.json、managed-settings.d/*.json、managed-mcp.json。
  * https://code.claude.com/docs/en/managed-settings
  */
 async function managedCandidates(dir: string): Promise<Candidate[]> {
-  const out: Candidate[] = [];
   let dropIns: string[] = [];
   try {
-    dropIns = (await fs.readdir(path.join(dir, 'managed-settings.d'))).filter((n) => n.endsWith('.json')).sort().slice(0, MAX_DROP_INS);
+    // 隠しファイルと .json 以外は Claude Code も読まない。名前順（numeric prefix で順序を決める運用）
+    dropIns = (await fs.readdir(path.join(dir, 'managed-settings.d')))
+      .filter((n) => n.endsWith('.json') && !n.startsWith('.'))
+      .sort()
+      .slice(0, MAX_DROP_INS);
   } catch {
     // ディレクトリがなければ分割ファイルはない
   }
-  for (const n of dropIns) {
-    out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.d', n) });
-  }
-  out.push(
-    { agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.json') },
-    { agent: 'claude-code', kind: 'claude-mcp', scope: 'managed', path: path.join(dir, 'managed-mcp.json') },
-  );
+  // 公式仕様: managed-settings.json を先に、続いて managed-settings.d/*.json を名前順に合成する（後のファイルが勝つ）
+  const out: Candidate[] = [
+    { agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.json'), mergeOrder: 0 },
+  ];
+  dropIns.forEach((n, i) => {
+    out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.d', n), mergeOrder: i + 1 });
+  });
+  out.push({ agent: 'claude-code', kind: 'claude-mcp', scope: 'managed', path: path.join(dir, 'managed-mcp.json') });
   return out;
 }
 

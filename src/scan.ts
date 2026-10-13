@@ -19,6 +19,7 @@ import { collectLaunchTexts } from './launch/sources.js';
 import { parseLaunch } from './launch/parse.js';
 import { splitCommands } from './launch/tokenize.js';
 import { applyPrecedence, effectiveEnableAll } from './precedence.js';
+import { protectOutput } from './util/protect.js';
 import { runRules } from './rules/index.js';
 import type { AgentId, ConfigFile, LaunchCommand, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
 import { parseJsonc } from './util/jsonc.js';
@@ -56,6 +57,9 @@ export const DISCLAIMER = tx(
     'IDE settings, and MCP server implementations. ' +
     'Having no findings does not mean the setup is safe.',
 );
+
+const UNEXPECTED_FILE = tx('解析中に予期しないエラーが発生したため、このファイルは分析していません', 'An unexpected error occurred while parsing, so this file was not analyzed');
+const UNEXPECTED = tx('解析中に予期しないエラーが発生したため、この項目は分析していません', 'An unexpected error occurred while parsing, so this item was not analyzed');
 
 /** 利用者に見せるエラー。文言は表示時に言語を選ぶ */
 export class AgentScopeError extends Error {
@@ -122,9 +126,10 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     } catch {
       // 想定外の入力でパーサーが失敗しても、他のファイルの分析は続ける。例外の内容は設定値を含みうるため出さない
       file.status = 'parse-error';
-      file.reason = tx('解析中に予期しないエラーが発生したため、このファイルは分析していません', 'An unexpected error occurred while parsing, so this file was not analyzed');
+      file.reason = UNEXPECTED_FILE;
       continue;
     }
+    if (c.mergeOrder !== undefined) for (const st of result.settings) st.mergeOrder = c.mergeOrder;
     parsed.push(result);
     if ('approvalHints' in result) approvalHints.push(result.approvalHints as ClaudeMcpApprovalHints);
   }
@@ -150,7 +155,14 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   });
   for (const t of texts) {
     for (const [k, words] of splitCommands(t.text).entries()) {
-      const lp = await parseLaunch(words, { root, source: { file: t.file, pointer: t.pointer }, launchId: `${t.file}#${t.pointer}#${k}` });
+      let lp: Awaited<ReturnType<typeof parseLaunch>>;
+      try {
+        lp = await parseLaunch(words, { root, source: { file: t.file, pointer: t.pointer }, launchId: `${t.file}#${t.pointer}#${k}` });
+      } catch {
+        // 1つの起動コマンドの解析に失敗しても、他の分析は続ける。例外の内容は設定値を含みうるため出さない
+        unparsed.push({ agent: 'claude-code', file: t.file, pointer: t.pointer, reason: UNEXPECTED });
+        continue;
+      }
       if (!lp || !agents.includes(lp.launch.agent)) continue;
       launches.push(lp.launch);
       rules.push(...lp.rules);
@@ -169,7 +181,14 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     }
   }
   for (const e of envInputs) {
-    const { setting, secret } = envToSetting(e);
+    let converted: ReturnType<typeof envToSetting>;
+    try {
+      converted = envToSetting(e);
+    } catch {
+      unparsed.push({ agent: 'claude-code', file: e.source.file, pointer: e.source.pointer, reason: UNEXPECTED });
+      continue;
+    }
+    const { setting, secret } = converted;
     if (setting && agents.includes(setting.agent)) settings.push(setting);
     if (secret && agents.includes(secret.agent)) secretHits.push(secret);
   }
@@ -181,7 +200,8 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   const counts: Record<RiskLevel, number> = { HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
   for (const f of findings) counts[f.level]++;
 
-  return {
+  // 出力保護: どの経路から来た文字列でも、既知形式の秘密情報が残っていれば伏せる
+  return protectOutput({
     tool: { name: 'agentscope', version: VERSION },
     target: root,
     agents,
@@ -195,7 +215,7 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     unparsed,
     summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, launches: launches.length, findings: counts },
     disclaimer: DISCLAIMER,
-  };
+  });
 }
 
 /** Claude Code の管理設定ファイルの置き場所 https://code.claude.com/docs/en/managed-settings */

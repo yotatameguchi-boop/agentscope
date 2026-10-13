@@ -15,9 +15,10 @@ import { SCOPE_PRECEDENCE, type PermissionRule, type PermissionSetting } from '.
  * （推測で安全側に倒すと、危険な設定を見落とさせることになるため）。
  */
 export function applyPrecedence(rules: PermissionRule[], settings: PermissionSetting[]): void {
+  // 単一値を先に確定させる（allowManagedPermissionRulesOnly や disable 系のロックも、合成後の値で判定するため）
+  applyScalarPrecedence(settings);
   applyManagedOnly(rules, settings);
   applyRuleShadowing(rules);
-  applyScalarPrecedence(settings);
   applyModeLocks(settings);
 }
 
@@ -126,14 +127,24 @@ function applyScalarPrecedence(settings: PermissionSetting[]): void {
   }
   for (const group of byKey.values()) {
     if (group.length < 2) continue;
-    const sorted = [...group].sort((a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope]);
+    // 上位のスコープが勝つ。同じ管理設定の中では、後に合成されるファイル（mergeOrder が大きい）が勝つ
+    const sorted = [...group].sort(
+      (a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0),
+    );
     const winner = sorted[0]!;
     for (const s of sorted.slice(1)) {
-      if (SCOPE_PRECEDENCE[s.scope] === SCOPE_PRECEDENCE[winner.scope]) continue; // 同じ優先度（管理設定の分割ファイルなど）は判定しない
       s.status = 'overridden';
-      s.statusNote = overriddenBy(winner);
+      s.statusNote = s.scope === winner.scope ? mergedOverBy(winner) : overriddenBy(winner);
     }
   }
+}
+
+function mergedOverBy(winner: PermissionSetting): Text {
+  const v = typeof winner.value === 'string' ? winner.value : winner.value.en;
+  return tx(
+    `管理設定の合成で、後から読まれる ${winner.source.file} の値（${v}）に置き換えられます`,
+    `Replaced by the value in ${winner.source.file} (${v}), which is merged later in the managed settings`,
+  );
 }
 
 function overriddenBy(winner: PermissionSetting): Text {
@@ -181,6 +192,6 @@ function applyModeLocks(settings: PermissionSetting[]): void {
 export function effectiveEnableAll(settings: PermissionSetting[]): { value: boolean; file: string } | undefined {
   const s = settings
     .filter((x) => x.agent === 'claude-code' && x.key === 'enableAllProjectMcpServers' && x.status === 'active')
-    .sort((a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope])[0];
+    .sort((a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0))[0];
   return s ? { value: s.value === 'true', file: s.source.file } : undefined;
 }

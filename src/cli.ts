@@ -3,6 +3,7 @@ import { CommanderError } from 'commander';
 import { tx } from './i18n.js';
 import { buildProgram, pickLang } from './program.js';
 import { AgentScopeError } from './scan.js';
+import { maskSecrets } from './util/protect.js';
 
 /** 終了コード: 0 = 分析完了（検出の有無によらない）、2 = エラー */
 const EXIT_ERROR = 2;
@@ -33,7 +34,7 @@ async function main() {
       err instanceof AgentScopeError
         ? err.text[lang]
         : tx('予期しないエラーが発生しました', 'An unexpected error occurred')[lang] + (err instanceof Error ? `: ${err.message}` : '');
-    process.stderr.write(`agentscope: ${message}\n`);
+    process.stderr.write(`agentscope: ${maskSecrets(message)}\n`);
     process.exitCode = EXIT_ERROR;
   }
 }

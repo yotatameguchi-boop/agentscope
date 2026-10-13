@@ -101,7 +101,7 @@ AgentScope Security Report (v0.1.0)
 | Cursor | `~/.cursor/permissions.json` | ユーザー全体 | `-g` | 同上 |
 | Cursor | `.cursor/cli.json` | プロジェクト共有 | ○ | Cursor CLI の `permissions.allow` / `deny`（`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`） |
 | Cursor | `~/.cursor/cli-config.json` | ユーザー全体 | `-g` | 同上（CLI の他の設定は読み飛ばす） |
-| Claude Code | `managed-settings.json`、`managed-settings.d/*.json`、`managed-mcp.json` | 組織の管理設定 | `-g` | `/Library/Application Support/ClaudeCode/`（macOS）、`/etc/claude-code/`（Linux / WSL）、`C:\Program Files\ClaudeCode\`（Windows）。最優先 |
+| Claude Code | `managed-settings.json`、`managed-settings.d/*.json`、`managed-mcp.json` | 組織の管理設定 | `-g` | `/Library/Application Support/ClaudeCode/`（macOS）、`/etc/claude-code/`（Linux / WSL）、`C:\Program Files\ClaudeCode\`（Windows）。最優先。Claude Code と同じく `managed-settings.json` を先に、続いて `managed-settings.d/*.json` を名前順に合成します（隠しファイルは除外）。単一値は後のファイルが勝ち、リストは結合し、`env` / `sandbox` はキーごとに合成します |
 
 JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 
@@ -118,7 +118,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 | `.github/workflows/*.yml` の `run:` 行と、`anthropics/claude-code-action` の `claude_args:` 入力 | 既定 |
 | `~/.zshrc`、`~/.bashrc`、`~/.bash_profile`、`~/.profile`、`~/.zprofile`、`~/.config/fish/config.fish`（alias とコマンド） | `-g` 指定時 |
 
-認識する起動は `claude`、`npx @anthropic-ai/claude-code`、`agent`、`cursor-agent` です。`env`・`exec`・`timeout` や、先頭の `VAR=値` の代入を挟んでいても認識します。
+オプションの解析は `--` で止め、それ以降は位置引数として扱います。認識する起動は `claude`、`npx @anthropic-ai/claude-code`、`agent`、`cursor-agent` です。`env`・`exec`・`timeout` や、先頭の `VAR=値` の代入を挟んでいても認識します。
 
 | エージェント | 解析するオプション |
 | --- | --- |
@@ -206,6 +206,8 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 - エージェント、MCP サーバー、設定に書かれたコマンドを起動・実行しません
 - ネットワーク通信をしません（`http` / `net` / `child_process` などのモジュールを読み込まないことをテストで検査しています）
 - 認証情報の値・その一部・長さを出力しません。MCP サーバーは起動コマンドの実行ファイル名、URL のホスト名、環境変数・ヘッダーの**名前**だけを扱い、引数や値は保持しません。秘密情報を含む権限ルール文字列（`API_KEY=...`、`--token ...`、`curl -u user:pass` なども含む）は `[REDACTED]` に置き換えます。キー名・サーバー名などの名前が秘密情報らしい場合も伏せます
+- 秘密情報の検出と出力保護を分けています。値がどの経路（設定・起動オプション・環境変数・検出結果・注記）から来ても、結果を返す直前に全体へ伏せ字処理をかけ、既知形式の秘密情報・URL 内の認証情報・秘密情報らしい `key=値` / `--flag 値` を `[REDACTED]` に置き換えます
+- `${VAR}` は参照として扱いますが、`${VAR:-値}` はリテラルの既定値を含むため、既定値を直接書かれた値として検査します
 - 端末に出す前に、設定ファイル由来の制御文字（ANSI エスケープ、改行など）と双方向制御文字・不可視文字をエスケープし、設定ファイルでレポートの表示を書き換えたり偽装したりできないようにしています
 - シンボリックリンクは解決先を確認し、プロジェクトの設定が対象ディレクトリの外を指している場合は読みません。通常ファイル以外（FIFO など）、20MB を超えるファイル、入れ子が 256 段を超える JSON も読みません
 - オブジェクトはプロトタイプなしで組み立てるため、`"__proto__"` キーで書かれていないキーを見せかけることはできません。1つのファイルの解析が想定外に失敗しても、他のファイルの分析は続けます

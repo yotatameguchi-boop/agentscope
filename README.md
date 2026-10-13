@@ -102,7 +102,7 @@ Missing files are skipped without error. AgentScope does not walk directories; i
 | Cursor | `~/.cursor/permissions.json` | user-wide | `-g` | same as above |
 | Cursor | `.cursor/cli.json` | project, shared | yes | Cursor CLI `permissions.allow` / `deny` (`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`) |
 | Cursor | `~/.cursor/cli-config.json` | user-wide | `-g` | same as above (other CLI preferences are skipped) |
-| Claude Code | `managed-settings.json`, `managed-settings.d/*.json`, `managed-mcp.json` | organization-managed | `-g` | in `/Library/Application Support/ClaudeCode/` (macOS), `/etc/claude-code/` (Linux / WSL), `C:\Program Files\ClaudeCode\` (Windows). Highest precedence |
+| Claude Code | `managed-settings.json`, `managed-settings.d/*.json`, `managed-mcp.json` | organization-managed | `-g` | in `/Library/Application Support/ClaudeCode/` (macOS), `/etc/claude-code/` (Linux / WSL), `C:\Program Files\ClaudeCode\` (Windows). Highest precedence. As in Claude Code, `managed-settings.json` is merged first and then `managed-settings.d/*.json` in name order (hidden files skipped): single values from a later file win, lists are combined, and `env` / `sandbox` merge key by key |
 
 Both JSON and JSONC (comments, trailing commas) are supported.
 
@@ -119,7 +119,7 @@ Launch options such as `claude --dangerously-skip-permissions` or `agent --force
 | `.github/workflows/*.yml` `run:` lines and the `claude_args:` input of `anthropics/claude-code-action` | by default |
 | `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.zprofile`, `~/.config/fish/config.fish` (aliases and commands) | with `-g` |
 
-Recognized invocations are `claude`, `npx @anthropic-ai/claude-code`, `agent`, and `cursor-agent`, also behind `env`, `exec`, `timeout`, and leading `VAR=value` assignments.
+Option parsing stops at `--`; anything after it is treated as a positional argument. Recognized invocations are `claude`, `npx @anthropic-ai/claude-code`, `agent`, and `cursor-agent`, also behind `env`, `exec`, `timeout`, and leading `VAR=value` assignments.
 
 | Agent | Options analyzed |
 | --- | --- |
@@ -207,6 +207,8 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 - Never starts or runs agents, MCP servers, or configured commands
 - No network access (a test checks that modules such as `http`, `net`, and `child_process` are never imported)
 - Never prints credential values, any part of them, or their length. For MCP servers, only the executable name, the URL host name, and the **names** of environment variables and headers are kept; arguments and values are dropped. Permission rules that contain secrets (including `API_KEY=...`, `--token ...`, `curl -u user:pass`) are replaced with `[REDACTED]`, and so are key names, server names, and other names that look like secrets
+- Detection and output protection are separate. Whatever path a value came in through (settings, launch options, environment variables, findings, notes), the whole result goes through a final masking step right before it is returned, which replaces known secret formats, URL credentials, and secret-looking `key=value` / `--flag value` pairs with `[REDACTED]`
+- `${VAR}` is treated as a reference, but `${VAR:-value}` contains a literal default value, so the default is checked like a value written directly
 - Before printing to the terminal, control characters (ANSI escapes, newlines) and bidirectional / invisible characters from config files are escaped, so a config file cannot rewrite or disguise the report
 - Symbolic links are resolved first, and project settings that point outside the target directory are not read. Non-regular files (FIFOs, etc.), files over 20 MB, and JSON nested deeper than 256 levels are not read either
 - Objects are built without a prototype, so a `"__proto__"` key cannot make unwritten keys appear. If parsing one file fails unexpectedly, the other files are still analyzed

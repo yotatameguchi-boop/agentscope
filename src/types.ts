@@ -121,6 +121,8 @@ export interface PermissionSetting {
   status: EffectStatus;
   statusNote?: Text;
   launchId?: string;
+  /** 管理設定の合成順。同じ管理設定の中では、大きいほど後に合成され単一値で勝つ */
+  mergeOrder?: number;
 }
 
 /** 見つかった起動コマンド。権限に関わるオプションだけを、表示しても安全な形で持つ */
