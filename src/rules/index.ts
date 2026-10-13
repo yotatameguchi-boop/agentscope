@@ -1,6 +1,6 @@
 import { tx } from '../i18n.js';
 import { RISK_ORDER, type Finding } from '../types.js';
-import { i001, i002, i003 } from './info.js';
+import { i001, i002, i003, i004 } from './info.js';
 import { r001 } from './r001-broad-command.js';
 import { r002 } from './r002-mcp-auto-approve.js';
 import { r003 } from './r003-relaxed-checks.js';
@@ -8,9 +8,10 @@ import { r004 } from './r004-inline-credentials.js';
 import { r005 } from './r005-broad-file-access.js';
 import { r006 } from './r006-broad-network.js';
 import { r007 } from './r007-risky-env.js';
+import { r008 } from './r008-managed-integrity.js';
 import type { RuleContext, SecurityRule } from './types.js';
 
-export const SECURITY_RULES: SecurityRule[] = [r001, r002, r003, r004, r005, r006, r007, i001, i002, i003];
+export const SECURITY_RULES: SecurityRule[] = [r001, r002, r003, r004, r005, r006, r007, r008, i001, i002, i003, i004];
 
 export function runRules(ctx: RuleContext, rules: SecurityRule[] = SECURITY_RULES): Finding[] {
   const findings = rules.flatMap((r) => r.check(ctx)).map((f) => applyEffect(f, ctx));

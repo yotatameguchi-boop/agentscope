@@ -2,6 +2,7 @@ import { tx } from '../i18n.js';
 import type { AgentId, Finding } from '../types.js';
 import { AGENT_LABELS } from '../types.js';
 import { AUTO_EXEC_KEYS } from '../parsers/claude.js';
+import { SOURCE_LABEL } from '../precedence.js';
 import { finding, type SecurityRule } from './types.js';
 
 /**
@@ -104,5 +105,60 @@ export const i003: SecurityRule = {
         ),
       }),
     );
+  },
+};
+
+const managedRule = { id: 'I004', title: tx('組織の管理設定の配布元', 'Sources of organization-managed settings') };
+
+/**
+ * どの管理設定の配布元を確認でき、どれを使うと判定したか、どれを確認できなかったかを明示する（-g のときだけ）。
+ */
+export const i004: SecurityRule = {
+  ...managedRule,
+  description: tx(
+    '確認できた管理設定の配布元と使われる配布元、確認できない配布元（Windows のレジストリ、サーバー配信の最新の内容）を明示します。',
+    'States which managed settings sources were found and used, and which cannot be checked (the Windows registry, the latest server-managed payload).',
+  ),
+  check(ctx) {
+    if (!ctx.includeGlobal || !ctx.agents.includes('claude-code')) return [];
+    const managed = ctx.files.filter((f) => f.managedSource);
+    const selected = managed.find((f) => f.managedSelected && f.managedSource !== undefined);
+    const found = [...new Set(managed.map((f) => f.managedSource!))];
+    const label = (s: string) => SOURCE_LABEL[s as keyof typeof SOURCE_LABEL];
+    const parts: Array<{ ja: string; en: string }> = [];
+    if (found.length === 0) {
+      parts.push(tx('管理設定は見つかりませんでした。', 'No managed settings were found.'));
+    } else {
+      parts.push(tx(`見つかった配布元: ${found.map((s) => label(s).ja).join('、')}。`, `Sources found: ${found.map((s) => label(s).en).join(', ')}.`));
+      if (selected) parts.push(tx(`使われる配布元: ${label(selected.managedSource!).ja}。`, `Source in effect: ${label(selected.managedSource!).en}.`));
+    }
+    if (found.includes('remote')) {
+      parts.push(tx(
+        'サーバー配信の設定はローカルのキャッシュを読んでいます。最新の内容とは異なる場合があり、サードパーティのプロバイダや公式以外の ANTHROPIC_BASE_URL を使うセッションには適用されません。',
+        'Server-managed settings are read from the local cache. It may differ from the latest payload, and it does not apply to sessions that use a third-party provider or a non-default ANTHROPIC_BASE_URL.',
+      ));
+    } else {
+      parts.push(tx(
+        'サーバー配信の管理設定は、取得済みのキャッシュがないため確認していません（AgentScope は通信しません）。',
+        'Server-managed settings were not checked because there is no local cache (AgentScope does not use the network).',
+      ));
+    }
+    if (ctx.platform === 'win32') {
+      parts.push(tx(
+        'Windows のレジストリ（HKLM / HKCU の SOFTWARE\\Policies\\ClaudeCode）は、外部コマンドを実行しない方針のため確認していません。',
+        'The Windows registry (SOFTWARE\\Policies\\ClaudeCode under HKLM / HKCU) was not checked, because AgentScope does not run external commands.',
+      ));
+    }
+    return [finding(managedRule, {
+      level: 'INFO',
+      agent: 'claude-code',
+      reason: tx(parts.map((p) => p.ja).join(''), parts.map((p) => p.en).join(' ')),
+      file: selected?.displayPath ?? '(managed settings)',
+      pointer: '(sources)',
+      recommendation: tx(
+        '管理設定が意図どおりに適用されているかは、Claude Code の /status や claude doctor でも確認してください。',
+        'Also check with /status or claude doctor in Claude Code that the managed policy is applied as intended.',
+      ),
+    })];
   },
 };

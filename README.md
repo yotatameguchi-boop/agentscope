@@ -102,6 +102,7 @@ Missing files are skipped without error. AgentScope does not walk directories; i
 | Cursor | `~/.cursor/permissions.json` | user-wide | `-g` | same as above |
 | Cursor | `.cursor/cli.json` | project, shared | yes | Cursor CLI `permissions.allow` / `deny` (`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`) |
 | Cursor | `~/.cursor/cli-config.json` | user-wide | `-g` | same as above (other CLI preferences are skipped) |
+| Claude Code | `~/.claude/remote-settings.json` (local cache of server-managed settings), the macOS configuration profile `/Library/Managed Preferences/[<user>/]com.anthropic.claudecode.plist` (XML or binary, read without `plutil`) | organization-managed | `-g` | see [Organization-managed settings](#organization-managed-settings) |
 | Claude Code | `managed-settings.json`, `managed-settings.d/*.json`, `managed-mcp.json` | organization-managed | `-g` | in `/Library/Application Support/ClaudeCode/` (macOS), `/etc/claude-code/` (Linux / WSL), `C:\Program Files\ClaudeCode\` (Windows). Highest precedence. As in Claude Code, `managed-settings.json` is merged first and then `managed-settings.d/*.json` in name order (hidden files skipped): single values from a later file win, lists are combined, and `env` / `sandbox` merge key by key |
 
 Both JSON and JSONC (comments, trailing commas) are supported.
@@ -170,6 +171,14 @@ Both agents' settings are converted into a common format (`PermissionRule`), whi
 | Deny | `permissions.deny` | (none) | `permissions.deny` (wins over allow) |
 | Hints | (none) | `autoRun.allow_instructions` / `block_instructions` (non-binding hints for a classifier; kept apart as `guidance-allow` / `guidance-block`) | (none) |
 
+### Organization-managed settings
+
+Claude Code reads managed settings from several sources, ranked server-managed > MDM (macOS configuration profile / Windows HKLM registry) > files. By default (`"first-wins"`), only the highest-ranked source that has a policy key is used; with `managedSourcesBehavior: "merge"` in the top source, every source is used and higher-ranked values win. AgentScope follows the same rules:
+
+- Rules and settings from sources that are not used are marked `ignored`. Keys that Claude Code reads from every admin source (`env` per variable, `allowManagedMcpServersOnly`, `deniedMcpServers`, `disableClaudeAiConnectors`, `sandbox.filesystem.disabled`, `forceRemoteSettingsRefresh`) are kept
+- R008 reports a managed file that is not strict JSON (comments, trailing commas, syntax errors, a non-object top level) or a malformed profile, because Claude Code refuses to start in that state (LOW). An empty file counts as `{}`. A managed file that the OS does not let the current user read is reported as MEDIUM, because sessions of that user start without the policy
+- I004 lists the sources found, the one in effect, and what could not be checked
+
 ### Precedence and effectiveness
 
 A rule written in a file is not always in effect. Every rule and setting carries a `status`:
@@ -195,9 +204,11 @@ Only cases that are certain are treated as neutralized. When a deny rule covers 
 | R005 | Broad file access is allowed (`Edit` without a path, `Read(~/**)`, edits to `.claude/**`, `.github/workflows/**`, reading `~/.aws`, etc.) | HIGH / MEDIUM / LOW |
 | R006 | Network access to any destination is allowed (`WebFetch`, `WebFetch(domain:*)`, `"*"` in `sandbox.network.allowedDomains`, Cursor CLI `WebFetch(*)`) | MEDIUM |
 | R007 | Environment variables that turn off safety checks or change the API endpoint (see [Environment variables](#environment-variables)) | HIGH / MEDIUM / LOW / INFO |
+| R008 | Organization-managed settings are not applied correctly (Claude Code refuses to start, or the policy cannot be read) | MEDIUM / LOW |
 | I001 | States that the actual tool list of MCP servers is not verified | INFO |
 | I002 | States that Cursor IDE settings (such as Run Mode) are not verified | INFO |
 | I003 | States that automatically executed commands are configured (hooks, `statusLine`, `apiKeyHelper`, etc.); their contents are not shown | INFO |
+| I004 | Lists organization-managed settings sources found and in effect, and what could not be checked (with `-g`) | INFO |
 
 Every finding has a rule ID, risk level, reason, source file, setting location (a JSON path), and a recommended fix. Levels come from fixed rules, never from guesses.
 
@@ -208,6 +219,7 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 - No network access (a test checks that modules such as `http`, `net`, and `child_process` are never imported)
 - Never prints credential values, any part of them, or their length. For MCP servers, only the executable name, the URL host name, and the **names** of environment variables and headers are kept; arguments and values are dropped. Permission rules that contain secrets (including `API_KEY=...`, `--token ...`, `curl -u user:pass`) are replaced with `[REDACTED]`, and so are key names, server names, and other names that look like secrets
 - Detection and output protection are separate. Whatever path a value came in through (settings, launch options, environment variables, findings, notes), the whole result goes through a final masking step right before it is returned, which replaces known secret formats, URL credentials, and secret-looking `key=value` / `--flag value` pairs with `[REDACTED]`
+- Values that detection judged to be secrets (including values without a known format, such as an env value under a `*_TOKEN` key) are kept in memory for the duration of one scan only, and any other occurrence of the same value anywhere in the output is masked too. Long, high-entropy tokens that mix upper case, lower case, and digits are also masked; hex hashes, UUIDs, and human-made names (camelCase or hyphenated words) are left alone
 - `${VAR}` is treated as a reference, but `${VAR:-value}` contains a literal default value, so the default is checked like a value written directly
 - Before printing to the terminal, control characters (ANSI escapes, newlines) and bidirectional / invisible characters from config files are escaped, so a config file cannot rewrite or disguise the report
 - Symbolic links are resolved first, and project settings that point outside the target directory are not read. Non-regular files (FIFOs, etc.), files over 20 MB, and JSON nested deeper than 256 levels are not read either
@@ -217,7 +229,7 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 ## Limitations
 
 - **Permissions written in configuration files are not the same as the permissions that can actually be exercised.** The following are not analyzed:
-  - Organization-managed settings (Claude Code managed settings, Cursor team admin settings)
+  - The Windows registry (`HKLM` / `HKCU` `SOFTWARE\Policies\ClaudeCode`), because reading it requires running an external command or a native module; the latest server-managed payload (only the local cache is read, and AgentScope never uses the network); Cursor team admin settings
   - Launch options and environment variables that are not found in the locations above (for example typed directly in a terminal) unless you pass them with `--launch` or `--include-env`; environment variables outside the catalog
   - Cursor IDE settings (Run Mode, allowlists registered in the settings UI)
   - The tools MCP servers actually provide, and what they can reach

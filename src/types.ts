@@ -37,6 +37,7 @@ export type EffectStatus = 'active' | 'ignored' | 'overridden';
 export type ConfigKind =
   | 'claude-settings'
   | 'claude-mcp'
+  | 'claude-plist'
   | 'claude-global-state'
   | 'cursor-mcp'
   | 'cursor-permissions'
@@ -62,7 +63,18 @@ export interface ConfigFile {
   reason?: Text;
   /** シンボリックリンクだった場合のリンク先（表示用） */
   symlinkTarget?: string;
+  /** 管理設定の配布元（remote = サーバー配信のキャッシュ、mdm = 構成プロファイル、file = managed-settings.json など） */
+  managedSource?: ManagedSource;
+  /** 管理設定の配布元のうち、Claude Code が実際に使うものか（既定の first-wins で選ばれたか） */
+  managedSelected?: boolean;
+  /** 管理設定の不備。refuses-start = Claude Code が起動を拒否する、not-applied = 読めないため適用されない */
+  managedIssue?: { kind: 'refuses-start' | 'not-applied'; reason: Text };
 }
+
+export type ManagedSource = 'remote' | 'mdm' | 'file';
+
+/** 管理設定の配布元の優先順位（小さいほど優先）。https://code.claude.com/docs/en/managed-settings */
+export const MANAGED_SOURCE_RANK: Record<ManagedSource, number> = { remote: 1, mdm: 2, file: 3 };
 
 /** 設定箇所への参照 */
 export interface SourceRef {
@@ -108,6 +120,8 @@ export interface PermissionRule {
   statusNote?: Text;
   /** 起動オプション由来のとき、どの起動コマンドか（LaunchCommand.launchId） */
   launchId?: string;
+  /** 管理設定由来のとき、その配布元 */
+  managedSource?: ManagedSource;
 }
 
 /** 権限ルール以外の、権限に関わる設定値 */
@@ -123,6 +137,8 @@ export interface PermissionSetting {
   launchId?: string;
   /** 管理設定の合成順。同じ管理設定の中では、大きいほど後に合成され単一値で勝つ */
   mergeOrder?: number;
+  /** 管理設定由来のとき、その配布元 */
+  managedSource?: ManagedSource;
 }
 
 /** 見つかった起動コマンド。権限に関わるオプションだけを、表示しても安全な形で持つ */

@@ -1,5 +1,5 @@
 import { tx, type Text } from './i18n.js';
-import { SCOPE_PRECEDENCE, type PermissionRule, type PermissionSetting } from './types.js';
+import { MANAGED_SOURCE_RANK, SCOPE_PRECEDENCE, type ManagedSource, type PermissionRule, type PermissionSetting } from './types.js';
 
 /**
  * 複数の設定ファイルにまたがる優先順位を解決し、ルール・設定に有効性（status）を付ける。
@@ -14,13 +14,92 @@ import { SCOPE_PRECEDENCE, type PermissionRule, type PermissionSetting } from '.
  * 「打ち消されている」と判定するのは確実に言える場合だけにする。部分的な重なりは判定しない
  * （推測で安全側に倒すと、危険な設定を見落とさせることになるため）。
  */
-export function applyPrecedence(rules: PermissionRule[], settings: PermissionSetting[]): void {
-  // 単一値を先に確定させる（allowManagedPermissionRulesOnly や disable 系のロックも、合成後の値で判定するため）
+export function applyPrecedence(rules: PermissionRule[], settings: PermissionSetting[], managed: ManagedSelection = NO_MANAGED): void {
+  // 使われない管理設定の配布元を先に外す
+  applyManagedSourceSelection(rules, settings, managed);
+  // 単一値を確定させる（allowManagedPermissionRulesOnly や disable 系のロックも、合成後の値で判定するため）
   applyScalarPrecedence(settings);
   applyManagedOnly(rules, settings);
   applyRuleShadowing(rules);
   applyModeLocks(settings);
 }
+
+// ---- 管理設定の配布元 ------------------------------------------------------------
+
+export interface ManagedSourceInfo {
+  source: ManagedSource;
+  file: string;
+  /** 制御用のキー以外を1つでも持つか（持つ配布元が「存在する文書」として選ばれる） */
+  hasPolicyKey: boolean;
+  /** managedSourcesBehavior の値 */
+  behavior?: string;
+}
+
+export interface ManagedSelection {
+  /** 使われる配布元（first-wins）。merge のときは最上位 */
+  selected?: ManagedSource;
+  behavior: 'first-wins' | 'merge';
+  /** その配布元の設定が使われるか */
+  applies(source: ManagedSource): boolean;
+}
+
+const NO_MANAGED: ManagedSelection = { behavior: 'first-wins', applies: () => true };
+
+/**
+ * 管理設定の配布元を選ぶ。https://code.claude.com/docs/en/managed-settings
+ * - 優先順位は サーバー配信 > MDM > ファイル。既定（first-wins）では、ポリシーのキーを持つ最上位の配布元だけが使われる
+ * - managedSourcesBehavior は、そのキーかポリシーのキーを持つ最上位の配布元からだけ読む。"merge" ならすべての配布元を使う
+ */
+export function selectManagedSource(sources: ManagedSourceInfo[]): ManagedSelection {
+  const ranked = [...sources].sort((a, b) => MANAGED_SOURCE_RANK[a.source] - MANAGED_SOURCE_RANK[b.source]);
+  const selected = ranked.find((s) => s.hasPolicyKey)?.source;
+  const behaviorFrom = ranked.find((s) => s.hasPolicyKey || s.behavior !== undefined);
+  const behavior = behaviorFrom?.behavior === 'merge' ? 'merge' : 'first-wins';
+  return {
+    selected,
+    behavior,
+    applies: (source) => behavior === 'merge' || selected === undefined || source === selected,
+  };
+}
+
+/** 選ばれなかった配布元からも読まれるキー（Keys read from every admin source のうち、AgentScope が扱うもの） */
+function isCrossSourceKey(key: string): boolean {
+  return (
+    key.startsWith('env.') ||
+    key === 'allowManagedMcpServersOnly' ||
+    key === 'deniedMcpServers' ||
+    key === 'disableClaudeAiConnectors' ||
+    key === 'sandbox.filesystem.disabled' ||
+    key === 'forceRemoteSettingsRefresh'
+  );
+}
+
+function applyManagedSourceSelection(rules: PermissionRule[], settings: PermissionSetting[], managed: ManagedSelection): void {
+  if (!managed.selected) return;
+  const note = (source: ManagedSource) =>
+    tx(
+      `管理設定は上位の配布元（${SOURCE_LABEL[managed.selected!].ja}）が使われるため、この配布元（${SOURCE_LABEL[source].ja}）の値は使われません`,
+      `Not used, because a higher-ranked managed source (${SOURCE_LABEL[managed.selected!].en}) supplies the policy instead of this one (${SOURCE_LABEL[source].en})`,
+    );
+  for (const r of rules) {
+    if (r.managedSource && !managed.applies(r.managedSource) && r.status === 'active') {
+      r.status = 'ignored';
+      r.statusNote = note(r.managedSource);
+    }
+  }
+  for (const s of settings) {
+    if (s.managedSource && !managed.applies(s.managedSource) && !isCrossSourceKey(s.key) && s.status === 'active') {
+      s.status = 'ignored';
+      s.statusNote = note(s.managedSource);
+    }
+  }
+}
+
+export const SOURCE_LABEL: Record<ManagedSource, Text> = {
+  remote: tx('サーバー配信（キャッシュ）', 'server-managed (cached)'),
+  mdm: tx('MDM の構成プロファイル', 'MDM configuration profile'),
+  file: tx('managed-settings ファイル', 'managed-settings files'),
+};
 
 /** 管理設定で allowManagedPermissionRulesOnly が有効なら、管理設定以外の権限ルールは使われない */
 function applyManagedOnly(rules: PermissionRule[], settings: PermissionSetting[]): void {
@@ -129,14 +208,19 @@ function applyScalarPrecedence(settings: PermissionSetting[]): void {
     if (group.length < 2) continue;
     // 上位のスコープが勝つ。同じ管理設定の中では、後に合成されるファイル（mergeOrder が大きい）が勝つ
     const sorted = [...group].sort(
-      (a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0),
+      (a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || managedRank(a) - managedRank(b) || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0),
     );
     const winner = sorted[0]!;
     for (const s of sorted.slice(1)) {
       s.status = 'overridden';
-      s.statusNote = s.scope === winner.scope ? mergedOverBy(winner) : overriddenBy(winner);
+      s.statusNote = s.scope === winner.scope && s.managedSource === winner.managedSource ? mergedOverBy(winner) : overriddenBy(winner);
     }
   }
+}
+
+/** 管理設定の配布元の順位（サーバー配信 > MDM > ファイル）。配布元をまたぐキー（env など）は上位が勝つ */
+function managedRank(s: PermissionSetting): number {
+  return s.managedSource ? MANAGED_SOURCE_RANK[s.managedSource] : 0;
 }
 
 function mergedOverBy(winner: PermissionSetting): Text {
@@ -192,6 +276,6 @@ function applyModeLocks(settings: PermissionSetting[]): void {
 export function effectiveEnableAll(settings: PermissionSetting[]): { value: boolean; file: string } | undefined {
   const s = settings
     .filter((x) => x.agent === 'claude-code' && x.key === 'enableAllProjectMcpServers' && x.status === 'active')
-    .sort((a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0))[0];
+    .sort((a, b) => SCOPE_PRECEDENCE[a.scope] - SCOPE_PRECEDENCE[b.scope] || managedRank(a) - managedRank(b) || (b.mergeOrder ?? 0) - (a.mergeOrder ?? 0))[0];
   return s ? { value: s.value === 'true', file: s.source.file } : undefined;
 }

@@ -1,0 +1,1 @@
+{"permissions":{"allow":["Bash(npm run test *)"],"deny":["Bash(curl *)","Read(./.env)"],"defaultMode":"plan","disableBypassPermissionsMode":"disable"},"allowManagedPermissionRulesOnly":true,"env":{"NODE_TLS_REJECT_UNAUTHORIZED":"0","日本語キー":"値 with üñíçødé"},"cleanupPeriodDays":30,"ratio":1.5,"nested":{"empty":{},"list":[]}}

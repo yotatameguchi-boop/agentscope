@@ -10,6 +10,10 @@ export interface RuleContext {
   secretHits: SecretHit[];
   /** ホームディレクトリ（additionalDirectories がホーム全体かの判定に使う） */
   home?: string;
+  /** ユーザー単位・組織の管理設定まで読んだか（-g） */
+  includeGlobal?: boolean;
+  /** 実行中の OS（読めない管理設定の配布元を伝えるため） */
+  platform?: NodeJS.Platform;
 }
 
 /** 検査ルール。外部コントリビューターはこの形のオブジェクトを追加し、rules/index.ts に登録する */

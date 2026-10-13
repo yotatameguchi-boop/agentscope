@@ -2,6 +2,7 @@ import { tx, type Text } from '../i18n.js';
 import type { AgentId, SecretHit } from '../types.js';
 import { isPlainObject } from './jsonc.js';
 import { joinPointer } from './pointer.js';
+import { rememberSecret } from './vault.js';
 
 /**
  * 設定ファイル内に直接書かれた認証情報らしき文字列を探す（R004 の材料）。
@@ -70,8 +71,11 @@ export function isReferenceOrPlaceholder(value: string): boolean {
   return false;
 }
 
-function matchValuePattern(value: string): Text | undefined {
-  for (const p of VALUE_PATTERNS) if (p.re.test(value)) return p.label;
+function matchValuePattern(value: string): { label: Text; part: string } | undefined {
+  for (const p of VALUE_PATTERNS) {
+    const m = p.re.exec(value);
+    if (m) return { label: p.label, part: m[0] };
+  }
   return undefined;
 }
 
@@ -84,36 +88,45 @@ export function safeDecode(v: string): string {
   }
 }
 
-/** URL にユーザー情報（user:pass@）やトークン系クエリが含まれるか */
-function hasUrlCredential(value: string): boolean {
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false;
+/** URL にユーザー情報（user:pass@）やトークン系クエリが含まれるか。含まれていればその値を返す */
+function urlCredential(value: string): string | undefined {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return undefined;
   let u: URL;
   try {
     u = new URL(value);
   } catch {
-    return false;
+    return undefined;
   }
-  if (u.password && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(safeDecode(u.password))) return true;
+  if (u.password && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(safeDecode(u.password))) return safeDecode(u.password);
   for (const [k, v] of u.searchParams) {
-    if (SECRET_KEY_RE.test(k) && !isReferenceOrPlaceholder(v)) return true;
+    if (SECRET_KEY_RE.test(k) && !isReferenceOrPlaceholder(v)) return v;
   }
-  return false;
+  return undefined;
+}
+
+function hasUrlCredential(value: string): boolean {
+  return urlCredential(value) !== undefined;
 }
 
 /**
  * 文字列の中に埋め込まれた資格情報を探す。
  * 例: `API_KEY=abc...`、`password: abc...`、`--token abc...`、`curl -u user:pass`
  */
-function findInlineSecret(value: string): Text | undefined {
+function findInlineSecret(value: string): { label: Text; part: string } | undefined {
   for (const m of value.matchAll(/(?:^|[\s;&|'"(?,])(?:export\s+)?([A-Za-z_][\w.-]*)\s*[=:]\s*(['"]?)([^\s'";&|)?]+)\2/g)) {
-    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return tx(`「${m[1]}」の値`, `the value of ${m[1]}`);
+    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return { label: tx(`「${m[1]}」の値`, `the value of ${m[1]}`), part: secretPart(m[3]!) };
   }
   for (const m of value.matchAll(/(?:^|\s)--?([A-Za-z][\w-]*)\s+(['"]?)([^\s'"-][^\s'"]*)\2/g)) {
-    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return tx(`引数 ${m[1]} の値`, `the value of argument ${m[1]}`);
+    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return { label: tx(`引数 ${m[1]} の値`, `the value of argument ${m[1]}`), part: secretPart(m[3]!) };
   }
   const user = /(?:^|\s)(?:-u|--user)\s+(['"]?)[^\s:'"]+:([^\s'"]+)\1/.exec(value);
-  if (user && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(user[2]!)) return tx('ユーザー名とパスワード', 'a username and password');
+  if (user && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(user[2]!)) return { label: tx('ユーザー名とパスワード', 'a username and password'), part: user[2]! };
   return undefined;
+}
+
+/** ${VAR:-既定値} なら既定値の部分が秘密情報 */
+function secretPart(value: string): string {
+  return parseVarRef(value)?.fallback ?? value;
 }
 
 /** 秘密情報らしいフラグ名か（--api-key, --token, --password など） */
@@ -135,20 +148,29 @@ export function redactName(name: string): string {
 
 /** 1つの文字列値を検査する。keyName はその値のキー名（配列要素なら直前のキー名） */
 export function classifySecret(keyName: string | undefined, value: string): Omit<SecretHit, 'agent' | 'file' | 'pointer'> | undefined {
-  const label = matchValuePattern(value);
-  if (label) return { kind: 'value-pattern', label };
-  if (hasUrlCredential(value)) return { kind: 'url-credential', label: tx('URL 内の認証情報', 'credentials embedded in a URL') };
+  const found = detectSecret(keyName, value);
+  if (!found) return undefined;
+  // 判定した値そのものを保管庫に覚える（出力保護が、同じ値が別の場所に現れたときにも伏せられるように）
+  rememberSecret(found.part);
+  return { kind: found.kind, label: found.label };
+}
+
+function detectSecret(keyName: string | undefined, value: string): { kind: SecretHit['kind']; label: Text; part: string } | undefined {
+  const pattern = matchValuePattern(value);
+  if (pattern) return { kind: 'value-pattern', ...pattern };
+  const url = urlCredential(value);
+  if (url !== undefined) return { kind: 'url-credential', label: tx('URL 内の認証情報', 'credentials embedded in a URL'), part: url };
   // --api-key=xxxx のような引数
   const flag = /^--?([A-Za-z][\w-]*)=(.+)$/.exec(value);
   if (flag && SECRET_KEY_RE.test(flag[1]!) && !isReferenceOrPlaceholder(flag[2]!)) {
-    return { kind: 'key-name', label: tx(`引数 ${flag[1]}`, `Argument ${flag[1]}`) };
+    return { kind: 'key-name', label: tx(`引数 ${flag[1]}`, `Argument ${flag[1]}`), part: secretPart(flag[2]!) };
   }
   if (keyName && SECRET_KEY_RE.test(keyName) && !isReferenceOrPlaceholder(value)) {
     const shown = redactName(keyName);
-    return { kind: 'key-name', label: tx(`「${shown}」`, `Key "${shown}"`) };
+    return { kind: 'key-name', label: tx(`「${shown}」`, `Key "${shown}"`), part: secretPart(value) };
   }
   const inline = findInlineSecret(value);
-  if (inline) return { kind: 'key-name', label: inline };
+  if (inline) return { kind: 'key-name', ...inline };
   return undefined;
 }
 
@@ -166,6 +188,7 @@ export function scanForSecrets(value: unknown, agent: AgentId, file: string, poi
         // ["--token", "abc..."] のように、フラグの次の要素に値を置く形
         if (typeof item === 'string' && i > 0 && isSecretFlag(v[i - 1]) && !isReferenceOrPlaceholder(item) && !classifySecret(keyName, item)) {
           const flag = String(v[i - 1]).replace(/^--?/, '');
+          rememberSecret(secretPart(item));
           hits.push({ agent, file, pointer: p, kind: 'key-name', label: tx(`引数 ${flag} の値`, `the value of argument ${flag}`) });
           return;
         }

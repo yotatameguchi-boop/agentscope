@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>allowManagedPermissionRulesOnly</key>
+	<true/>
+	<key>cleanupPeriodDays</key>
+	<integer>30</integer>
+	<key>env</key>
+	<dict>
+		<key>NODE_TLS_REJECT_UNAUTHORIZED</key>
+		<string>0</string>
+		<key>日本語キー</key>
+		<string>値 with üñíçødé</string>
+	</dict>
+	<key>nested</key>
+	<dict>
+		<key>empty</key>
+		<dict/>
+		<key>list</key>
+		<array/>
+	</dict>
+	<key>permissions</key>
+	<dict>
+		<key>allow</key>
+		<array>
+			<string>Bash(npm run test *)</string>
+		</array>
+		<key>defaultMode</key>
+		<string>plan</string>
+		<key>deny</key>
+		<array>
+			<string>Bash(curl *)</string>
+			<string>Read(./.env)</string>
+		</array>
+		<key>disableBypassPermissionsMode</key>
+		<string>disable</string>
+	</dict>
+	<key>ratio</key>
+	<real>1.5</real>
+</dict>
+</plist>

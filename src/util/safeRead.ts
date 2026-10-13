@@ -6,9 +6,9 @@ import { tx, type Text } from '../i18n.js';
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 export type ReadOutcome =
-  | { ok: true; text: string; symlinkTarget?: string }
+  | { ok: true; text: string; bytes: Buffer; symlinkTarget?: string }
   | { ok: false; missing: true }
-  | { ok: false; missing: false; reason: Text; symlinkTarget?: string };
+  | { ok: false; missing: false; reason: Text; symlinkTarget?: string; code?: string };
 
 export interface SafeReadOptions {
   /**
@@ -32,7 +32,7 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
     lst = await fs.lstat(filePath);
   } catch (err) {
     if (isNotFound(err)) return { ok: false, missing: true };
-    return { ok: false, missing: false, reason: tx(`ファイル情報を取得できません (${errCode(err)})`, `Cannot stat the file (${errCode(err)})`) };
+    return { ok: false, missing: false, reason: tx(`ファイル情報を取得できません (${errCode(err)})`, `Cannot stat the file (${errCode(err)})`), code: errCode(err) };
   }
 
   // ファイル自体だけでなく途中のディレクトリ（.claude/ など）がリンクの場合も実体を確認する
@@ -68,7 +68,7 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
     handle = await fs.open(target, fsc.O_RDONLY | noFollow | nonBlock);
   } catch (err) {
     if (isNotFound(err)) return { ok: false, missing: true };
-    return { ok: false, missing: false, reason: tx(`ファイルを開けません (${errCode(err)})`, `Cannot open the file (${errCode(err)})`), symlinkTarget };
+    return { ok: false, missing: false, reason: tx(`ファイルを開けません (${errCode(err)})`, `Cannot open the file (${errCode(err)})`), symlinkTarget, code: errCode(err) };
   }
   try {
     const st = await handle.stat();
@@ -86,10 +86,11 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
         symlinkTarget,
       };
     }
-    const text = await handle.readFile({ encoding: 'utf8' });
-    return { ok: true, text: stripBom(text), symlinkTarget };
+    // バイナリ plist のように文字列でないファイルもあるため、バイト列も返す
+    const bytes = await handle.readFile();
+    return { ok: true, text: stripBom(bytes.toString('utf8')), bytes, symlinkTarget };
   } catch (err) {
-    return { ok: false, missing: false, reason: tx(`ファイルを読み取れません (${errCode(err)})`, `Cannot read the file (${errCode(err)})`), symlinkTarget };
+    return { ok: false, missing: false, reason: tx(`ファイルを読み取れません (${errCode(err)})`, `Cannot read the file (${errCode(err)})`), symlinkTarget, code: errCode(err) };
   } finally {
     await handle.close();
   }

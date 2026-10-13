@@ -18,11 +18,13 @@ import { envToSetting, knownEnv } from './env/record.js';
 import { collectLaunchTexts } from './launch/sources.js';
 import { parseLaunch } from './launch/parse.js';
 import { splitCommands } from './launch/tokenize.js';
-import { applyPrecedence, effectiveEnableAll } from './precedence.js';
+import { applyPrecedence, effectiveEnableAll, selectManagedSource, type ManagedSourceInfo } from './precedence.js';
+import { parsePlist } from './util/plist.js';
 import { protectOutput } from './util/protect.js';
+import { withSecretVault } from './util/vault.js';
 import { runRules } from './rules/index.js';
 import type { AgentId, ConfigFile, LaunchCommand, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
-import { parseJsonc } from './util/jsonc.js';
+import { isPlainObject, parseJsonc } from './util/jsonc.js';
 import { safeReadFile } from './util/safeRead.js';
 import { VERSION } from './version.js';
 
@@ -37,6 +39,10 @@ export interface ScanOptions {
   home?: string;
   /** Claude Code の管理設定ディレクトリ（テスト用に差し替え可能。既定は OS ごとの場所） */
   managedDir?: string;
+  /** macOS の構成プロファイルの候補（テスト用に差し替え可能。既定は macOS の managed preferences の場所） */
+  mdmPaths?: string[];
+  /** OS（テスト用に差し替え可能） */
+  platform?: NodeJS.Platform;
   /** 起動コマンド（例: "claude --permission-mode bypassPermissions"）。実行はせず、文字列として解析する */
   launch?: string[];
   /** package.json の scripts などから起動コマンドを探す（既定: true）。includeGlobal 時はシェルの設定ファイルも見る */
@@ -69,7 +75,12 @@ export class AgentScopeError extends Error {
   }
 }
 
-export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
+export function scan(opts: ScanOptions = {}): Promise<ScanResult> {
+  // 秘密情報と判定した値は、このスキャンの間だけ保管庫に置き、出力保護に使う
+  return withSecretVault((vault) => scanInner(opts, vault));
+}
+
+async function scanInner(opts: ScanOptions, vault: ReadonlySet<string>): Promise<ScanResult> {
   const root = path.resolve(opts.root ?? process.cwd());
   const home = path.resolve(opts.home ?? os.homedir());
   const agents = opts.agents ?? ['claude-code', 'cursor'];
@@ -85,7 +96,10 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   const approvalHints: ClaudeMcpApprovalHints[] = [];
 
   const managedDir = opts.managedDir ?? defaultManagedDir();
-  const candidates = await discoverCandidates({ root, home, agents, includeGlobal, managedDir });
+  const mdmPaths = opts.mdmPaths ?? defaultMdmPaths();
+  const candidates = await discoverCandidates({ root, home, agents, includeGlobal, managedDir, mdmPaths });
+  /** 管理設定の配布元ごとの情報（どれが使われるかの判定に使う） */
+  const managedSources: ManagedSourceInfo[] = [];
   for (const c of candidates) {
     const displayPath = toDisplayPath(c.path, root, home);
     const read = await safeReadFile(c.path, { confineTo: c.confineTo });
@@ -99,12 +113,18 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
       displayPath,
       status: 'parsed',
       symlinkTarget: read.symlinkTarget ? toDisplayPath(read.symlinkTarget, root, home) : undefined,
+      managedSource: c.managedSource,
     };
     files.push(file);
 
     if (!read.ok) {
       file.status = 'skipped';
       file.reason = read.reason;
+      if (c.managedSource) {
+        file.managedIssue = managedReadIssue(read.code);
+        // 読めなかった管理設定も「存在する文書」として扱われ、下位の配布元より優先される
+        managedSources.push({ source: c.managedSource, file: displayPath, hasPolicyKey: true });
+      }
       continue;
     }
     if (c.kind === 'unsupported') {
@@ -112,17 +132,52 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
       file.reason = c.unsupportedReason;
       continue;
     }
-    const json = parseJsonc(read.text);
-    if (!json.ok) {
-      file.status = 'parse-error';
-      file.reason = json.reason;
-      continue;
+
+    // 内容を JSON の値にする（plist は自前で変換する）
+    let value: unknown;
+    if (c.kind === 'claude-plist') {
+      const pl = parsePlist(read.bytes);
+      if (!pl.ok) {
+        file.status = 'parse-error';
+        file.reason = tx(`plist として解析できません（${pl.reason}）`, `Cannot parse as a plist (${pl.reason})`);
+        file.managedIssue = REFUSES_START_PLIST;
+        managedSources.push({ source: 'mdm', file: displayPath, hasPolicyKey: true });
+        continue;
+      }
+      value = pl.value;
+    } else {
+      // 管理設定のファイルは空なら {} として扱われる
+      const text = c.managedSource === 'file' && read.text.trim() === '' ? '{}' : read.text;
+      const json = parseJsonc(text);
+      if (!json.ok) {
+        file.status = 'parse-error';
+        file.reason = json.reason;
+        if (c.managedSource === 'file') {
+          file.managedIssue = REFUSES_START_JSON;
+          managedSources.push({ source: 'file', file: displayPath, hasPolicyKey: true });
+        }
+        continue;
+      }
+      value = json.value;
+      // 管理設定のファイルは厳密な JSON でなければならない（コメントや末尾カンマがあると起動を拒否される）
+      if (c.managedSource === 'file' && !isStrictJsonObject(text)) file.managedIssue = REFUSES_START_JSON;
+    }
+    if (c.managedSource) {
+      if (!isPlainObject(value)) {
+        if (c.managedSource !== 'remote') file.managedIssue = c.managedSource === 'mdm' ? REFUSES_START_PLIST : REFUSES_START_JSON;
+      }
+      managedSources.push({
+        source: c.managedSource,
+        file: displayPath,
+        hasPolicyKey: isPlainObject(value) && Object.keys(value).some((k) => !MANAGED_CONTROL_KEYS.has(k)),
+        behavior: isPlainObject(value) && typeof value.managedSourcesBehavior === 'string' ? value.managedSourcesBehavior : undefined,
+      });
     }
 
     const ctx: ParseContext = { agent: c.agent, scope: c.scope, file: displayPath, root };
     let result: ParsedConfig;
     try {
-      result = parseByKind(c, ctx, json.value, projectKeyCandidates(root, realRoot));
+      result = parseByKind(c, ctx, value, projectKeyCandidates(root, realRoot));
     } catch {
       // 想定外の入力でパーサーが失敗しても、他のファイルの分析は続ける。例外の内容は設定値を含みうるため出さない
       file.status = 'parse-error';
@@ -130,9 +185,15 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
       continue;
     }
     if (c.mergeOrder !== undefined) for (const st of result.settings) st.mergeOrder = c.mergeOrder;
+    if (c.managedSource) {
+      for (const st of result.settings) st.managedSource = c.managedSource;
+      for (const r of result.rules) r.managedSource = c.managedSource;
+    }
     parsed.push(result);
     if ('approvalHints' in result) approvalHints.push(result.approvalHints as ClaudeMcpApprovalHints);
   }
+  const managedSelection = selectManagedSource(managedSources);
+  for (const f of files) if (f.managedSource) f.managedSelected = managedSelection.applies(f.managedSource);
 
   const rules = parsed.flatMap((p) => p.rules);
   const settings = parsed.flatMap((p) => p.settings);
@@ -193,14 +254,14 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     if (secret && agents.includes(secret.agent)) secretHits.push(secret);
   }
 
-  applyPrecedence(rules, settings);
+  applyPrecedence(rules, settings, managedSelection);
   resolveClaudeMcpApproval(mcpServers, approvalHints, effectiveEnableAll(settings) ?? null);
 
-  const findings = runRules({ agents, files, rules, settings, mcpServers, secretHits, home });
+  const findings = runRules({ agents, files, rules, settings, mcpServers, secretHits, home, includeGlobal, platform: opts.platform ?? process.platform });
   const counts: Record<RiskLevel, number> = { HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
   for (const f of findings) counts[f.level]++;
 
-  // 出力保護: どの経路から来た文字列でも、既知形式の秘密情報が残っていれば伏せる
+  // 出力保護: どの経路から来た文字列でも、既知形式の秘密情報や、検出時に秘密情報と判定した値が残っていれば伏せる
   return protectOutput({
     tool: { name: 'agentscope', version: VERSION },
     target: root,
@@ -215,7 +276,7 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     unparsed,
     summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, launches: launches.length, findings: counts },
     disclaimer: DISCLAIMER,
-  });
+  }, vault);
 }
 
 /** Claude Code の管理設定ファイルの置き場所 https://code.claude.com/docs/en/managed-settings */
@@ -223,6 +284,64 @@ export function defaultManagedDir(platform: NodeJS.Platform = process.platform):
   if (platform === 'darwin') return '/Library/Application Support/ClaudeCode';
   if (platform === 'win32') return 'C:\\Program Files\\ClaudeCode';
   return '/etc/claude-code';
+}
+
+/**
+ * macOS の構成プロファイル（managed preferences の com.anthropic.claudecode ドメイン）。
+ * コンピュータ全体と、ユーザー単位の2か所に置かれうる。
+ */
+export function defaultMdmPaths(platform: NodeJS.Platform = process.platform): string[] {
+  if (platform !== 'darwin') return [];
+  const out = ['/Library/Managed Preferences/com.anthropic.claudecode.plist'];
+  try {
+    out.push(`/Library/Managed Preferences/${os.userInfo().username}/com.anthropic.claudecode.plist`);
+  } catch {
+    // ユーザー名を取得できない環境ではコンピュータ全体の場所だけを見る
+  }
+  return out;
+}
+
+/** 管理設定の配布元を選ぶときに数えないキー（https://code.claude.com/docs/en/managed-settings） */
+const MANAGED_CONTROL_KEYS = new Set(['wslInheritsWindowsSettings', 'managedSourcesBehavior']);
+
+const REFUSES_START_JSON = {
+  kind: 'refuses-start' as const,
+  reason: tx(
+    '管理設定のファイルが厳密な JSON のオブジェクトではありません（コメント・末尾カンマ・構文エラー・オブジェクト以外を含む）。この状態では Claude Code は起動を拒否します',
+    'The managed settings file is not a strict JSON object (it has comments, trailing commas, a syntax error, or a non-object top level). Claude Code refuses to start in this state',
+  ),
+};
+const REFUSES_START_PLIST = {
+  kind: 'refuses-start' as const,
+  reason: tx(
+    '構成プロファイル（plist）が壊れているか、内容がオブジェクトではありません。この状態では Claude Code は起動を拒否します',
+    'The configuration profile (plist) is malformed or its content is not an object. Claude Code refuses to start in this state',
+  ),
+};
+
+/** 管理設定を読めなかったときの扱い。権限で拒否されたなら適用されず、それ以外の読み取り失敗なら起動を拒否する */
+function managedReadIssue(code: string | undefined): ConfigFile['managedIssue'] {
+  if (code === 'EACCES' || code === 'EPERM') {
+    return {
+      kind: 'not-applied',
+      reason: tx(
+        'この管理設定は OS の権限により読めません。Claude Code も同じユーザーで動くなら、この管理設定は適用されないまま起動します',
+        'This managed settings file cannot be read due to OS permissions. If Claude Code runs as the same user, it starts without applying this policy',
+      ),
+    };
+  }
+  return {
+    kind: 'refuses-start',
+    reason: tx('この管理設定を読み取れません。この状態では Claude Code は起動時に終了します', 'This managed settings file cannot be read. In this state Claude Code exits at startup'),
+  };
+}
+
+function isStrictJsonObject(text: string): boolean {
+  try {
+    return isPlainObject(JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text));
+  } catch {
+    return false;
+  }
 }
 
 /** 文言を1つの言語に確定させる。lang は JSON 出力にも含める */
@@ -234,6 +353,7 @@ export function localizeResult(result: ScanResult, lang: Lang): LocalizedScanRes
 function parseByKind(c: Candidate, ctx: ParseContext, json: unknown, projectKeys: string[]): ParsedConfig {
   switch (c.kind) {
     case 'claude-settings':
+    case 'claude-plist':
       return parseClaudeSettings(ctx, json);
     case 'claude-mcp':
       return parseClaudeMcpJson(ctx, json);

@@ -1,6 +1,7 @@
 import { tx, type Text } from '../i18n.js';
 import type { ConfigScope, PermissionSetting, SecretHit, SourceRef } from '../types.js';
 import { classifySecret, parseVarRef, redactIfSecret } from '../util/secrets.js';
+import { rememberSecret } from '../util/vault.js';
 import { ENV_CATALOG, READ_ONLY_ENV } from './catalog.js';
 
 /** 環境変数がどこから来たか。効く・効かないの判定に使う */
@@ -77,6 +78,9 @@ export function envToSetting(input: EnvInput): { setting?: PermissionSetting; se
     setting.status = 'ignored';
     setting.statusNote = tx(`${input.name} はプロジェクト・ローカル設定の env では無視されます`, `${input.name} is ignored in the env block of project or local settings`);
   }
+
+  // 資格情報の変数の値は、どこから来たものでも保管庫に覚え、出力に現れたら伏せる
+  if (spec.display === 'secret' && !isReference(input.value)) rememberSecret(raw);
 
   // ファイルに直接書かれた資格情報は、変数名やURLの形から R004 で検出する
   let secret: SecretHit | undefined;

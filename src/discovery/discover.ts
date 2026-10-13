@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Text } from '../i18n.js';
-import type { AgentId, ConfigKind, ConfigScope } from '../types.js';
+import type { AgentId, ConfigKind, ConfigScope, ManagedSource } from '../types.js';
 import { isInside } from '../util/safeRead.js';
 
 export interface Candidate {
@@ -15,6 +15,8 @@ export interface Candidate {
   unsupportedReason?: Text;
   /** 管理設定の合成順（大きいほど後に合成され、単一値で勝つ） */
   mergeOrder?: number;
+  /** 管理設定の配布元 */
+  managedSource?: ManagedSource;
 }
 
 export interface DiscoverOptions {
@@ -24,6 +26,8 @@ export interface DiscoverOptions {
   includeGlobal: boolean;
   /** Claude Code の管理設定ディレクトリ（managed-settings.json などの置き場所） */
   managedDir?: string;
+  /** macOS の構成プロファイル（com.anthropic.claudecode の managed preferences）の候補 */
+  mdmPaths?: string[];
 }
 
 /** managed-settings.d/ に置ける分割ファイルの上限。決まった1ディレクトリだけを、再帰せずに読む */
@@ -49,6 +53,10 @@ export async function discoverCandidates(opts: DiscoverOptions): Promise<Candida
         { agent: 'claude-code', kind: 'claude-settings', scope: 'user', path: p(home, '.claude', 'settings.json') },
         { agent: 'claude-code', kind: 'claude-global-state', scope: 'user', path: p(home, '.claude.json') },
       );
+      // 管理設定の配布元。優先順位は サーバー配信 > MDM > ファイル（https://code.claude.com/docs/en/managed-settings）
+      // サーバー配信はネットワークから取得しないが、Claude Code がローカルに残すキャッシュを読む
+      out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', managedSource: 'remote', path: p(home, '.claude', 'remote-settings.json') });
+      for (const mdm of opts.mdmPaths ?? []) out.push({ agent: 'claude-code', kind: 'claude-plist', scope: 'managed', managedSource: 'mdm', path: mdm });
       if (opts.managedDir) out.push(...(await managedCandidates(opts.managedDir)));
     }
   }
@@ -88,10 +96,10 @@ async function managedCandidates(dir: string): Promise<Candidate[]> {
   }
   // 公式仕様: managed-settings.json を先に、続いて managed-settings.d/*.json を名前順に合成する（後のファイルが勝つ）
   const out: Candidate[] = [
-    { agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.json'), mergeOrder: 0 },
+    { agent: 'claude-code', kind: 'claude-settings', scope: 'managed', managedSource: 'file', path: path.join(dir, 'managed-settings.json'), mergeOrder: 0 },
   ];
   dropIns.forEach((n, i) => {
-    out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.d', n), mergeOrder: i + 1 });
+    out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', managedSource: 'file', path: path.join(dir, 'managed-settings.d', n), mergeOrder: i + 1 });
   });
   out.push({ agent: 'claude-code', kind: 'claude-mcp', scope: 'managed', path: path.join(dir, 'managed-mcp.json') });
   return out;

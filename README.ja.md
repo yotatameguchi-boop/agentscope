@@ -101,6 +101,7 @@ AgentScope Security Report (v0.1.0)
 | Cursor | `~/.cursor/permissions.json` | ユーザー全体 | `-g` | 同上 |
 | Cursor | `.cursor/cli.json` | プロジェクト共有 | ○ | Cursor CLI の `permissions.allow` / `deny`（`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`） |
 | Cursor | `~/.cursor/cli-config.json` | ユーザー全体 | `-g` | 同上（CLI の他の設定は読み飛ばす） |
+| Claude Code | `~/.claude/remote-settings.json`（サーバー配信の管理設定のローカルキャッシュ）、macOS の構成プロファイル `/Library/Managed Preferences/[<ユーザー>/]com.anthropic.claudecode.plist`（XML・バイナリとも、`plutil` を使わずに読む） | 組織の管理設定 | `-g` | [組織の管理設定](#組織の管理設定)を参照 |
 | Claude Code | `managed-settings.json`、`managed-settings.d/*.json`、`managed-mcp.json` | 組織の管理設定 | `-g` | `/Library/Application Support/ClaudeCode/`（macOS）、`/etc/claude-code/`（Linux / WSL）、`C:\Program Files\ClaudeCode\`（Windows）。最優先。Claude Code と同じく `managed-settings.json` を先に、続いて `managed-settings.d/*.json` を名前順に合成します（隠しファイルは除外）。単一値は後のファイルが勝ち、リストは結合し、`env` / `sandbox` はキーごとに合成します |
 
 JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
@@ -169,6 +170,14 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 | 禁止 | `permissions.deny` | （なし） | `permissions.deny`（allow より優先） |
 | ヒント | （なし） | `autoRun.allow_instructions` / `block_instructions`（分類器へのヒントで強制力なし。`guidance-allow` / `guidance-block` として区別） | （なし） |
 
+### 組織の管理設定
+
+Claude Code は管理設定を複数の配布元から読みます。優先順位は サーバー配信 > MDM（macOS の構成プロファイル / Windows の HKLM レジストリ）> ファイル です。既定（`"first-wins"`）では、ポリシーのキーを持つ最上位の配布元だけが使われます。最上位の配布元に `managedSourcesBehavior: "merge"` があれば、すべての配布元を使い、上位の値が勝ちます。AgentScope も同じ規則で判定します。
+
+- 使われない配布元のルール・設定は `ignored` にします。ただし、Claude Code がすべての配布元から読むキー（変数ごとの `env`、`allowManagedMcpServersOnly`、`deniedMcpServers`、`disableClaudeAiConnectors`、`sandbox.filesystem.disabled`、`forceRemoteSettingsRefresh`）は残します
+- 管理設定のファイルが厳密な JSON でない場合（コメント・末尾カンマ・構文エラー・トップレベルがオブジェクト以外）や、構成プロファイルが壊れている場合は、Claude Code が起動を拒否するため R008 で報告します（LOW）。空のファイルは `{}` として扱います。OS の権限で現在のユーザーが読めない管理設定は、そのユーザーのセッションが管理設定なしで起動するため MEDIUM で報告します
+- I004 で、見つかった配布元・使われる配布元・確認できなかった範囲を示します
+
 ### 優先順位と有効性
 
 ファイルに書かれたルールが、常に効いているとは限りません。各ルール・設定には `status` が付きます。
@@ -194,9 +203,11 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 | R005 | 広範囲のファイル操作を許可する設定（パス限定のない `Edit`、`Read(~/**)`、`.claude/**` や `.github/workflows/**` の書き換え、`~/.aws` の読み取りなど） | HIGH / MEDIUM / LOW |
 | R006 | 任意の通信先へのアクセスを許可する設定（`WebFetch`、`WebFetch(domain:*)`、`sandbox.network.allowedDomains` の `"*"`、Cursor CLI の `WebFetch(*)`） | MEDIUM |
 | R007 | 安全機能や通信先を変える環境変数（[環境変数](#環境変数)を参照） | HIGH / MEDIUM / LOW / INFO |
+| R008 | 組織の管理設定が正しく適用されない（Claude Code が起動を拒否する、管理設定を読めない） | MEDIUM / LOW |
 | I001 | MCP サーバーの実際のツール一覧は未検証であることの明示 | INFO |
 | I002 | Cursor の IDE 側設定（Run Mode など）は未検証であることの明示 | INFO |
 | I003 | 自動実行されるコマンド（フック、`statusLine`、`apiKeyHelper` など）が設定されていることの明示。中身は表示しない | INFO |
+| I004 | 組織の管理設定の配布元（見つかったもの・使われるもの・確認できなかった範囲）を示す（`-g` 指定時） | INFO |
 
 各検出には、ルールID・リスクレベル・検出理由・根拠ファイル・該当する設定項目（JSON 上の位置）・推奨される対応が付きます。リスクレベルは固定のルールで決まり、推測による判定はしません。
 
@@ -207,6 +218,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 - ネットワーク通信をしません（`http` / `net` / `child_process` などのモジュールを読み込まないことをテストで検査しています）
 - 認証情報の値・その一部・長さを出力しません。MCP サーバーは起動コマンドの実行ファイル名、URL のホスト名、環境変数・ヘッダーの**名前**だけを扱い、引数や値は保持しません。秘密情報を含む権限ルール文字列（`API_KEY=...`、`--token ...`、`curl -u user:pass` なども含む）は `[REDACTED]` に置き換えます。キー名・サーバー名などの名前が秘密情報らしい場合も伏せます
 - 秘密情報の検出と出力保護を分けています。値がどの経路（設定・起動オプション・環境変数・検出結果・注記）から来ても、結果を返す直前に全体へ伏せ字処理をかけ、既知形式の秘密情報・URL 内の認証情報・秘密情報らしい `key=値` / `--flag 値` を `[REDACTED]` に置き換えます
+- 検出で秘密情報と判定した値（`*_TOKEN` のキーの値のように、形式に特徴のない値も含む）は、スキャン1回の間だけメモリに保持し、同じ値が出力の別の場所に現れたときにも伏せます。大文字・小文字・数字を含む長くランダム性の高い文字列も伏せます。16進のハッシュ、UUID、人が付けた名前（キャメルケースやハイフンでつないだ単語）は残します
 - `${VAR}` は参照として扱いますが、`${VAR:-値}` はリテラルの既定値を含むため、既定値を直接書かれた値として検査します
 - 端末に出す前に、設定ファイル由来の制御文字（ANSI エスケープ、改行など）と双方向制御文字・不可視文字をエスケープし、設定ファイルでレポートの表示を書き換えたり偽装したりできないようにしています
 - シンボリックリンクは解決先を確認し、プロジェクトの設定が対象ディレクトリの外を指している場合は読みません。通常ファイル以外（FIFO など）、20MB を超えるファイル、入れ子が 256 段を超える JSON も読みません
@@ -216,7 +228,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 ## 制約
 
 - **設定に書かれた権限と、実際に行使できる権限は一致しません。** 次の要素は分析していません
-  - 組織の管理設定（Claude Code の managed settings、Cursor のチーム管理者設定）
+  - Windows のレジストリ（`HKLM` / `HKCU` の `SOFTWARE\Policies\ClaudeCode`。読むには外部コマンドかネイティブモジュールが必要なため）、サーバー配信の最新の内容（ローカルのキャッシュだけを読み、通信はしません）、Cursor のチーム管理者設定
   - 上記の場所に書かれていない起動オプション・環境変数（ターミナルで直接入力したものなど）。`--launch` や `--include-env` を使えば分析できます。一覧にない環境変数
   - Cursor の IDE 設定（Run Mode、設定画面で登録した許可リスト）
   - MCP サーバーが実際に提供するツールと、その操作範囲
