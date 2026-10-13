@@ -5,6 +5,8 @@
  * `nativeKind` に元の設定項目の種類を残し、意味の違いを失わないようにする。
  */
 
+import type { Localized, Text } from './i18n.js';
+
 export type AgentId = 'claude-code' | 'cursor';
 
 export const AGENT_LABELS: Record<AgentId, string> = {
@@ -42,7 +44,7 @@ export interface ConfigFile {
   displayPath: string;
   status: FileStatus;
   /** status が parsed 以外のときの理由 */
-  reason?: string;
+  reason?: Text;
   /** シンボリックリンクだった場合のリンク先（表示用） */
   symlinkTarget?: string;
 }
@@ -85,7 +87,7 @@ export interface PermissionRule {
   nativeKind: string;
   source: SourceRef;
   /** 権限モデル上の注意（例: Cursor の autoRun は強制力のないヒント） */
-  note?: string;
+  note?: Text;
 }
 
 /** 権限ルール以外の、権限に関わる設定値 */
@@ -94,7 +96,7 @@ export interface PermissionSetting {
   scope: ConfigScope;
   key: string;
   /** 表示用の値。秘密情報になりうる値は入れない */
-  value: string;
+  value: string | Text;
   source: SourceRef;
 }
 
@@ -120,7 +122,7 @@ export interface McpServer {
   /** HTTP ヘッダーの名前のみ（値は保持しない） */
   headerNames: string[];
   approval: McpApproval;
-  approvalNote?: string;
+  approvalNote?: Text;
   source: SourceRef;
   /** 設定ファイルから分からないツール権限は常に unknown として扱う */
   toolPermissions: 'unknown';
@@ -134,16 +136,16 @@ export interface Finding {
   ruleId: string;
   level: RiskLevel;
   agent: AgentId;
-  title: string;
+  title: Text;
   /** 検出理由 */
-  reason: string;
+  reason: Text;
   /** 根拠となる設定ファイル（displayPath） */
   file: string;
   /** 該当する設定項目（JSON 上の位置） */
   pointer: string;
   /** 該当する設定値（秘密情報は含めない） */
   evidence?: string;
-  recommendation: string;
+  recommendation: Text;
 }
 
 /** 解析できなかった項目 */
@@ -151,7 +153,7 @@ export interface UnparsedItem {
   agent: AgentId;
   file: string;
   pointer: string;
-  reason: string;
+  reason: Text;
 }
 
 /** パーサー1回分の出力 */
@@ -171,7 +173,7 @@ export interface SecretHit {
   /** どの根拠で判定したか */
   kind: 'value-pattern' | 'key-name' | 'url-credential';
   /** 判定に使ったパターン名（例: GitHub token）。値は含めない */
-  label: string;
+  label: Text;
 }
 
 export interface ScanResult {
@@ -191,5 +193,8 @@ export interface ScanResult {
     mcpServers: number;
     findings: Record<RiskLevel, number>;
   };
-  disclaimer: string;
+  disclaimer: Text;
 }
+
+/** 出力用：文言を1つの言語に確定させたスキャン結果 */
+export type LocalizedScanResult = Localized<ScanResult> & { lang: 'ja' | 'en' };

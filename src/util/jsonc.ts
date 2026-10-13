@@ -1,6 +1,7 @@
 import { parse, printParseErrorCode, type ParseError } from 'jsonc-parser';
+import { tx, type Text } from '../i18n.js';
 
-export type JsoncResult = { ok: true; value: unknown } | { ok: false; reason: string };
+export type JsoncResult = { ok: true; value: unknown } | { ok: false; reason: Text };
 
 /** JSON / JSONC（コメント・末尾カンマ）を解析する。エラー位置は行番号で返し、内容は返さない */
 export function parseJsonc(text: string): JsoncResult {
@@ -9,7 +10,8 @@ export function parseJsonc(text: string): JsoncResult {
   if (errors.length > 0) {
     const first = errors[0]!;
     const line = text.slice(0, first.offset).split('\n').length;
-    return { ok: false, reason: `JSONC として解析できません（${line}行目: ${printParseErrorCode(first.error)}）` };
+    const code = printParseErrorCode(first.error);
+    return { ok: false, reason: tx(`JSONC として解析できません（${line}行目: ${code}）`, `Cannot parse as JSONC (line ${line}: ${code})`) };
   }
   return { ok: true, value };
 }

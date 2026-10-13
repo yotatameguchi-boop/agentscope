@@ -1,3 +1,4 @@
+import { tx, type Text } from '../i18n.js';
 import type { AgentId, SecretHit } from '../types.js';
 import { isPlainObject, joinPointer } from './jsonc.js';
 
@@ -7,25 +8,25 @@ import { isPlainObject, joinPointer } from './jsonc.js';
  */
 
 interface ValuePattern {
-  label: string;
+  label: Text;
   re: RegExp;
 }
 
 // 既知の形式。誤検知を抑えるため、プレフィックスと十分な長さの両方を要求する
 const VALUE_PATTERNS: ValuePattern[] = [
-  { label: 'Anthropic APIキー', re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
-  { label: 'OpenAI APIキー', re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
-  { label: 'GitHub トークン', re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
-  { label: 'GitLab トークン', re: /\bglpat-[A-Za-z0-9_-]{20,}/ },
-  { label: 'Slack トークン', re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
-  { label: 'AWS アクセスキーID', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  { label: 'Google APIキー', re: /\bAIza[0-9A-Za-z_-]{35}/ },
-  { label: 'Stripe シークレットキー', re: /\b[sr]k_live_[0-9A-Za-z]{20,}/ },
-  { label: 'npm トークン', re: /\bnpm_[A-Za-z0-9]{36}/ },
-  { label: 'Hugging Face トークン', re: /\bhf_[A-Za-z0-9]{30,}/ },
-  { label: '秘密鍵', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { label: 'JWT', re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
-  { label: 'Bearer トークン', re: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/ },
+  { label: tx('Anthropic APIキー', 'an Anthropic API key'), re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
+  { label: tx('OpenAI APIキー', 'an OpenAI API key'), re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
+  { label: tx('GitHub トークン', 'a GitHub token'), re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
+  { label: tx('GitLab トークン', 'a GitLab token'), re: /\bglpat-[A-Za-z0-9_-]{20,}/ },
+  { label: tx('Slack トークン', 'a Slack token'), re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
+  { label: tx('AWS アクセスキーID', 'an AWS access key ID'), re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { label: tx('Google APIキー', 'a Google API key'), re: /\bAIza[0-9A-Za-z_-]{35}/ },
+  { label: tx('Stripe シークレットキー', 'a Stripe secret key'), re: /\b[sr]k_live_[0-9A-Za-z]{20,}/ },
+  { label: tx('npm トークン', 'an npm token'), re: /\bnpm_[A-Za-z0-9]{36}/ },
+  { label: tx('Hugging Face トークン', 'a Hugging Face token'), re: /\bhf_[A-Za-z0-9]{30,}/ },
+  { label: tx('秘密鍵', 'a private key'), re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  { label: tx('JWT', 'a JWT'), re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+  { label: tx('Bearer トークン', 'a Bearer token'), re: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/ },
 ];
 
 // キー名から秘密情報を推定する
@@ -48,7 +49,7 @@ function isReferenceOrPlaceholder(value: string): boolean {
   return false;
 }
 
-function matchValuePattern(value: string): string | undefined {
+function matchValuePattern(value: string): Text | undefined {
   for (const p of VALUE_PATTERNS) if (p.re.test(value)) return p.label;
   return undefined;
 }
@@ -73,14 +74,14 @@ function hasUrlCredential(value: string): boolean {
 export function classifySecret(keyName: string | undefined, value: string): Omit<SecretHit, 'agent' | 'file' | 'pointer'> | undefined {
   const label = matchValuePattern(value);
   if (label) return { kind: 'value-pattern', label };
-  if (hasUrlCredential(value)) return { kind: 'url-credential', label: 'URL 内の認証情報' };
+  if (hasUrlCredential(value)) return { kind: 'url-credential', label: tx('URL 内の認証情報', 'credentials embedded in a URL') };
   // --api-key=xxxx のような引数
   const flag = /^--?([A-Za-z][\w-]*)=(.+)$/.exec(value);
   if (flag && SECRET_KEY_RE.test(flag[1]!) && !isReferenceOrPlaceholder(flag[2]!)) {
-    return { kind: 'key-name', label: `引数 ${flag[1]}` };
+    return { kind: 'key-name', label: tx(`引数 ${flag[1]}`, `Argument ${flag[1]}`) };
   }
   if (keyName && SECRET_KEY_RE.test(keyName) && !isReferenceOrPlaceholder(value)) {
-    return { kind: 'key-name', label: `「${keyName}」` };
+    return { kind: 'key-name', label: tx(`「${keyName}」`, `Key "${keyName}"`) };
   }
   return undefined;
 }

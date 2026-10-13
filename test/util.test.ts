@@ -20,8 +20,9 @@ describe('parseJsonc', () => {
     const r = parseJsonc('{\n "secret": "abc"\n "b": 1 }');
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.reason).toMatch(/3行目/);
-      expect(r.reason).not.toContain('abc');
+      expect(r.reason.ja).toMatch(/3行目/);
+      expect(r.reason.en).toMatch(/line 3/);
+      expect(JSON.stringify(r.reason)).not.toContain('abc');
     }
   });
 });
@@ -39,7 +40,7 @@ describe('safeReadFile', () => {
     const r = await safeReadFile(path.join(root, 'link.json'), { confineTo: root });
     expect(r.ok).toBe(false);
     if (!r.ok && !r.missing) {
-      expect(r.reason).toMatch(/外を指している/);
+      expect(r.reason.ja).toMatch(/外を指している/);
       expect(r.symlinkTarget).toBe(path.join(outside, 'target.json'));
     }
   });

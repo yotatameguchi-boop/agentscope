@@ -1,7 +1,7 @@
 {
   "name": "agentscope",
   "version": "0.1.0",
-  "description": "AIエージェント（Claude Code / Cursor）の権限設定を静的に分析し、リスクを可視化するCLI",
+  "description": "Statically analyzes the permission settings of AI agents (Claude Code / Cursor) and surfaces security risks",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -12,6 +12,7 @@
   "files": [
     "dist",
     "README.md",
+    "README.ja.md",
     "LICENSE"
   ],
   "engines": {

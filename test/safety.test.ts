@@ -7,7 +7,8 @@ import { FAKE, FIXTURES, makeDir, snapshot } from './helpers.js';
 
 async function runCli(args: string[]): Promise<string> {
   let out = '';
-  await buildProgram({ write: (s) => void (out += s), isTTY: false }).parseAsync(['node', 'agentscope', ...args]);
+  // 既定は日本語。英語のテストでは args に --lang en を渡す
+  await buildProgram({ write: (s) => void (out += s), isTTY: false }, 'ja').parseAsync(['node', 'agentscope', ...args]);
   return out;
 }
 

@@ -1,154 +1,161 @@
 # AgentScope
 
-AIコーディングエージェント（Claude Code / Cursor）の **権限設定を静的に分析し、セキュリティ上のリスクを可視化する** CLI ツールです。
+English | [日本語](README.ja.md)
 
-設定ファイルを読むだけで、エージェントや MCP サーバーの起動、設定されたコマンドの実行、外部への送信は行いません。
+A CLI that **statically analyzes the permission settings of AI coding agents (Claude Code / Cursor) and surfaces security risks**.
 
-- 許可・禁止・承認が必要な操作の一覧
-- 接続されている MCP サーバーの一覧（名前・接続方式・起動コマンド名・接続先ホスト・環境変数名）
-- 権限設定に潜むリスク（ルールベースで5種類）
-- 解析できなかった項目の明示
+It only reads configuration files. It never starts the agent or any MCP server, never runs configured commands, and never sends anything over the network.
 
-> v0.1 は MVP です。設定に**書かれている**権限を示すもので、実際に**行使できる**権限を保証するものではありません（[制約](#制約)を参照）。
+- What is allowed, denied, or requires approval
+- Configured MCP servers (name, transport, command name, host, environment variable names)
+- Risky permission settings (five rule-based checks)
+- An explicit list of what could not be analyzed
 
-## 動作環境
+> v0.1 is an MVP. It shows the permissions **written** in configuration files, not the permissions that can **actually be exercised** (see [Limitations](#limitations)).
 
-- Node.js 22.12 以上
+## Requirements
+
+- Node.js 22.12 or later
 - macOS / Linux / Windows
 
-## インストール
+## Installation
 
-npm には未公開です。ソースからビルドして使います。
+AgentScope is not published to npm yet. Build it from source:
 
 ```bash
 git clone https://github.com/yotatameguchi-boop/agentscope.git
 cd agentscope
 npm install
 npm run build
-npm link   # agentscope コマンドとして使えるようにする（任意）
+npm link   # optional: makes the agentscope command available
 ```
 
-`npm link` をしない場合は `node dist/cli.js` で実行できます。
+Without `npm link`, run it with `node dist/cli.js`.
 
-## 使い方
+## Usage
 
 ```bash
-agentscope scan                    # カレントディレクトリの設定を分析
-agentscope scan path/to/project    # ディレクトリを指定
-agentscope scan --agent claude     # Claude Code の設定だけ
-agentscope scan --agent cursor     # Cursor の設定だけ
-agentscope scan --format json      # JSON で出力
-agentscope scan --include-global   # ユーザー単位の設定も分析
+agentscope scan                    # analyze the current directory
+agentscope scan path/to/project    # analyze another directory
+agentscope scan --agent claude     # Claude Code settings only
+agentscope scan --agent cursor     # Cursor settings only
+agentscope scan --format json      # JSON output
+agentscope scan --include-global   # also analyze user-level settings
+agentscope scan --lang en          # English output
 agentscope --help
 ```
 
-| オプション | 説明 | 既定値 |
+| Option | Description | Default |
 | --- | --- | --- |
-| `-a, --agent <claude\|cursor\|all>` | 対象エージェント | `all` |
-| `-f, --format <text\|json>` | 出力形式 | `text` |
-| `-g, --include-global` | ホームディレクトリのユーザー設定も読む | 読まない |
-| `--no-color` | 色を付けない（`NO_COLOR` 環境変数でも無効化） | TTY のとき色付き |
+| `-a, --agent <claude\|cursor\|all>` | Agent to analyze | `all` |
+| `-f, --format <text\|json>` | Output format | `text` |
+| `-g, --include-global` | Also read user-level settings in the home directory | off |
+| `--no-color` | Disable colors (`NO_COLOR` also works) | colored on a TTY |
+| `--lang <ja\|en>` | Language of the report, JSON, and help | detected |
 
-終了コードは、分析できたとき `0`、対象ディレクトリが見つからないなどのエラー時に `2` です。検出の有無では変わりません。
+The output language is chosen from `--lang`, then `AGENTSCOPE_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`. A Japanese locale selects Japanese; anything else selects English.
 
-### 出力例
+The exit code is `0` when the analysis completes and `2` on errors such as a missing target directory. It does not depend on whether anything was found.
 
-`test/fixtures/risky-project`（テスト用のダミー設定）を分析した結果の抜粋です。
+### Example output
+
+An excerpt from analyzing `test/fixtures/risky-project` (dummy settings used by the tests):
 
 ```text
 AgentScope Security Report (v0.1.0)
-対象エージェント: Claude Code, Cursor
-設定ファイル: 5  権限ルール: 23  MCPサーバー: 4  検出: HIGH 5 / MEDIUM 11 / LOW 0 / INFO 4
+Agents: Claude Code, Cursor
+Config files: 5  Permission rules: 23  MCP servers: 4  Findings: HIGH 5 / MEDIUM 11 / LOW 0 / INFO 4
 
-■ 検出されたリスク
-  [HIGH] R001 広範囲のコマンド実行を自動承認する設定  (Claude Code)
-      理由: 「python3」は引数次第で任意のコードを実行できるため、実質的に広範囲のコマンド実行を許可しています
-      場所: .claude/settings.json  permissions.allow[1]
-      該当: Bash(python3 *)
-      対応: 「Bash(npm run test *)」のようにサブコマンドまで含めた具体的なルールに置き換え、破壊的な操作は ask か deny に入れてください。
-  [MEDIUM] R004 設定ファイルに認証情報らしき文字列が直接書かれている  (Claude Code)
-      理由: 「MY_SERVICE_PASSWORD」に、参照（${VAR} など）ではない値が直接書かれており、認証情報の可能性があります（値は表示しません）。
-      場所: .claude/settings.local.json  env.MY_SERVICE_PASSWORD
-      該当: env.MY_SERVICE_PASSWORD: [REDACTED]
-  [INFO] I001 MCP サーバーの実際のツール一覧は未検証  (Claude Code)
+■ Security findings
+  [HIGH] R001 Broad command execution is auto-approved  (Claude Code)
+      Reason: "python3" can run arbitrary code depending on its arguments, so this effectively allows broad command execution
+      Location: .claude/settings.json  permissions.allow[1]
+      Setting: Bash(python3 *)
+      Fix: Replace it with specific rules that include the subcommand, such as "Bash(npm run test *)", and put destructive operations in ask or deny.
+  [MEDIUM] R004 Credential-like strings are written directly in a config file  (Claude Code)
+      Reason: Key "MY_SERVICE_PASSWORD" holds a literal value rather than a reference such as ${VAR}; it may be a credential (value not shown).
+      Location: .claude/settings.local.json  env.MY_SERVICE_PASSWORD
+      Setting: env.MY_SERVICE_PASSWORD: [REDACTED]
+  [INFO] I001 The actual tool list of MCP servers is not verified  (Claude Code)
   ...
 ```
 
-## 分析対象
+## What is analyzed
 
-存在しないファイルはエラーにせずスキップします。ディレクトリの再帰走査はせず、下表の場所だけを見ます。
+Missing files are skipped without error. AgentScope does not walk directories; it only looks at the locations below.
 
-| エージェント | ファイル | 範囲 | 既定 | 内容 |
+| Agent | File | Scope | Default | Contents |
 | --- | --- | --- | --- | --- |
-| Claude Code | `.claude/settings.json` | プロジェクト共有 | ○ | 権限ルール、権限モード、MCP 承認、サンドボックスなど |
-| Claude Code | `.claude/settings.local.json` | プロジェクト個人 | ○ | 同上 |
-| Claude Code | `.mcp.json` | プロジェクト共有 | ○ | MCP サーバー定義 |
-| Claude Code | `~/.claude/settings.json` | ユーザー全体 | `-g` | 権限ルールなど |
-| Claude Code | `~/.claude.json` | ユーザー全体 / プロジェクト個人 | `-g` | **MCP に関わる部分のみ**（トップレベルの `mcpServers` と、対象ディレクトリの `projects[...]` の `mcpServers` / `enabledMcpjsonServers` / `disabledMcpjsonServers`）。他のキーは読み飛ばし、列挙もしません |
-| Cursor | `.cursor/mcp.json` | プロジェクト共有 | ○ | MCP サーバー定義 |
-| Cursor | `.cursor/permissions.json` | プロジェクト共有 | ○ | `mcpAllowlist` / `terminalAllowlist` / `autoRun` |
-| Cursor | `~/.cursor/mcp.json` | ユーザー全体 | `-g` | MCP サーバー定義 |
-| Cursor | `~/.cursor/permissions.json` | ユーザー全体 | `-g` | 同上 |
-| Cursor | `.cursor/cli.json`, `~/.cursor/cli-config.json` | — | — | 存在は検出するが **未対応** と表示 |
+| Claude Code | `.claude/settings.json` | project, shared | yes | permission rules, permission mode, MCP approval, sandbox, etc. |
+| Claude Code | `.claude/settings.local.json` | project, personal | yes | same as above |
+| Claude Code | `.mcp.json` | project, shared | yes | MCP server definitions |
+| Claude Code | `~/.claude/settings.json` | user-wide | `-g` | permission rules, etc. |
+| Claude Code | `~/.claude.json` | user-wide / project, personal | `-g` | **MCP-related parts only**: top-level `mcpServers`, and `mcpServers` / `enabledMcpjsonServers` / `disabledMcpjsonServers` in the `projects[...]` entry for the target directory. Other keys are skipped and never listed |
+| Cursor | `.cursor/mcp.json` | project, shared | yes | MCP server definitions |
+| Cursor | `.cursor/permissions.json` | project, shared | yes | `mcpAllowlist` / `terminalAllowlist` / `autoRun` |
+| Cursor | `~/.cursor/mcp.json` | user-wide | `-g` | MCP server definitions |
+| Cursor | `~/.cursor/permissions.json` | user-wide | `-g` | same as above |
+| Cursor | `.cursor/cli.json`, `~/.cursor/cli-config.json` | — | — | detected and reported as **unsupported** |
 
-JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
+Both JSON and JSONC (comments, trailing commas) are supported.
 
-### 権限モデルの違いの扱い
+### How the two permission models are handled
 
-両エージェントの設定は共通形式（`PermissionRule`）に変換しますが、意味の違いは `nativeKind` と `note` に残します。
+Both agents' settings are converted into a common format (`PermissionRule`), while the differences are kept in `nativeKind` and `note`.
 
 | | Claude Code | Cursor |
 | --- | --- | --- |
-| 許可 | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist`（前方一致。IDE 側の許可リストを置き換える） |
-| 要承認 | `permissions.ask` | （なし） |
-| 禁止 | `permissions.deny` | （なし） |
-| ヒント | （なし） | `autoRun.allow_instructions` / `block_instructions`（分類器へのヒントで強制力なし。`guidance-allow` / `guidance-block` として区別） |
+| Allow | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist` (prefix match; replaces the IDE allowlist) |
+| Ask | `permissions.ask` | (none) |
+| Deny | `permissions.deny` | (none) |
+| Hints | (none) | `autoRun.allow_instructions` / `block_instructions` (non-binding hints for a classifier; kept apart as `guidance-allow` / `guidance-block`) |
 
-## 検査ルール
+## Checks
 
-| ID | 内容 | 主なリスクレベル |
+| ID | What it detects | Main levels |
 | --- | --- | --- |
-| R001 | 広範囲のコマンド実行を自動承認する設定（`Bash`、`Bash(python3 *)`、Cursor の `bash` など） | HIGH / MEDIUM |
-| R002 | すべての MCP ツールを自動承認する設定（`mcp__server`、`*:*`、`enableAllProjectMcpServers` など） | HIGH / MEDIUM / INFO |
-| R003 | 権限チェックを大幅に緩和する設定（`defaultMode: bypassPermissions`、`skipDangerousModePermissionPrompt` など） | HIGH / MEDIUM / LOW |
-| R004 | 認証情報らしき文字列の直書き（既知のトークン形式、キー名、URL 内の認証情報） | HIGH / MEDIUM |
-| R005 | 広範囲のファイル操作を許可する設定（パス限定のない `Edit`、`Read(~/**)`、`.claude/**` の書き換え許可など） | HIGH / MEDIUM / LOW |
-| I001 | MCP サーバーの実際のツール一覧は未検証であることの明示 | INFO |
-| I002 | Cursor の IDE 側設定（Run Mode など）は未検証であることの明示 | INFO |
+| R001 | Broad command execution is auto-approved (`Bash`, `Bash(python3 *)`, `bash` in Cursor, etc.) | HIGH / MEDIUM |
+| R002 | All MCP tools are auto-approved (`mcp__server`, `*:*`, `enableAllProjectMcpServers`, etc.) | HIGH / MEDIUM / INFO |
+| R003 | Permission checks are significantly relaxed (`defaultMode: bypassPermissions`, `skipDangerousModePermissionPrompt`, etc.) | HIGH / MEDIUM / LOW |
+| R004 | Credential-like strings written directly (known token formats, key names, credentials in URLs) | HIGH / MEDIUM |
+| R005 | Broad file access is allowed (`Edit` without a path, `Read(~/**)`, allowing edits to `.claude/**`, etc.) | HIGH / MEDIUM / LOW |
+| I001 | States that the actual tool list of MCP servers is not verified | INFO |
+| I002 | States that Cursor IDE settings (such as Run Mode) are not verified | INFO |
 
-各検出には、ルールID・リスクレベル・検出理由・根拠ファイル・該当する設定項目（JSON 上の位置）・推奨される対応が付きます。リスクレベルは固定のルールで決まり、推測による判定はしません。
+Every finding has a rule ID, risk level, reason, source file, setting location (a JSON path), and a recommended fix. Levels come from fixed rules, never from guesses.
 
-## 安全性についての方針
+## Safety
 
-- 読み取り専用で動作します。ファイルは `O_RDONLY` で開き、書き込み系の API はソースコード上で使っていません（テストで検査しています）
-- エージェント、MCP サーバー、設定に書かれたコマンドを起動・実行しません
-- ネットワーク通信をしません（`http` / `net` / `child_process` などのモジュールを読み込まないことをテストで検査しています）
-- 認証情報の値・その一部・長さを出力しません。MCP サーバーは起動コマンドの実行ファイル名、URL のホスト名、環境変数・ヘッダーの**名前**だけを扱い、引数や値は保持しません。秘密情報を含む権限ルール文字列は `[REDACTED]` に置き換えます
-- シンボリックリンクは解決先を確認し、プロジェクトの設定が対象ディレクトリの外を指している場合は読みません。通常ファイル以外（FIFO など）や 20MB を超えるファイルも読みません
-- ホームディレクトリ全体は走査しません。`--include-global` でも上表の決まったファイルだけを読みます
+- Read-only. Files are opened with `O_RDONLY`, and the source never calls write APIs (enforced by a test)
+- Never starts or runs agents, MCP servers, or configured commands
+- No network access (a test checks that modules such as `http`, `net`, and `child_process` are never imported)
+- Never prints credential values, any part of them, or their length. For MCP servers, only the executable name, the URL host name, and the **names** of environment variables and headers are kept; arguments and values are dropped. Permission rules that contain secrets are replaced with `[REDACTED]`
+- Symbolic links are resolved first, and project settings that point outside the target directory are not read. Non-regular files (FIFOs, etc.) and files over 20 MB are not read either
+- The home directory is never walked. Even with `--include-global`, only the fixed files listed above are read
 
-## 制約
+## Limitations
 
-- **設定に書かれた権限と、実際に行使できる権限は一致しません。** 次の要素は分析していません
-  - 組織の管理設定（Claude Code の managed settings、Cursor のチーム管理者設定）
-  - 起動時のオプション（`--permission-mode`、`--allowedTools` など）
-  - Cursor の IDE 設定（Run Mode、設定画面で登録した許可リスト）
-  - MCP サーバーが実際に提供するツールと、その操作範囲
-  - プラグイン、フック、`apiKeyHelper` などのコマンドの中身
-- 複数ファイルの設定を合成した「最終的な有効権限」は計算せず、ファイルごとのルールを並べて表示します
-- 検出がないことは安全を意味しません。不明な設定や解析できなかった項目は「解析できなかった項目」に表示します
-- 認証情報の検出はパターンとキー名による推定のため、見逃しや誤検知がありえます
-- 仕様は各エージェントの公式ドキュメント（2026年10月時点）に基づきます
+- **Permissions written in configuration files are not the same as the permissions that can actually be exercised.** The following are not analyzed:
+  - Organization-managed settings (Claude Code managed settings, Cursor team admin settings)
+  - Launch options (`--permission-mode`, `--allowedTools`, etc.)
+  - Cursor IDE settings (Run Mode, allowlists registered in the settings UI)
+  - The tools MCP servers actually provide, and what they can reach
+  - The contents of plugins, hooks, `apiKeyHelper`, and other commands
+- AgentScope does not compute the final "effective permissions" merged across files; it lists the rules of each file side by side
+- No findings does not mean the setup is safe. Unknown settings and items that could not be analyzed are listed under "Items not analyzed"
+- Credential detection is based on patterns and key names, so it can miss things and report false positives
+- The rules follow each agent's official documentation as of October 2026:
   - Claude Code: [Settings](https://code.claude.com/docs/en/settings) / [Permissions](https://code.claude.com/docs/en/permissions)
   - Cursor: [permissions.json Reference](https://cursor.com/docs/reference/permissions) / [MCP](https://cursor.com/docs/context/mcp)
 
-## JSON 出力
+## JSON output
 
-`--format json` は次の構造を出力します（型定義は [src/types.ts](src/types.ts)）。
+`--format json` prints the following structure (types are in [src/types.ts](src/types.ts)). Human-readable strings are in the language chosen by `--lang`, which is recorded in `lang`.
 
 ```jsonc
 {
   "tool": { "name": "agentscope", "version": "0.1.0" },
+  "lang": "en",
   "target": "/path/to/project",
   "agents": ["claude-code", "cursor"],
   "includeGlobal": false,
@@ -156,56 +163,59 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
   "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, ... }],
   "settings": [{ "key": "permissions.defaultMode", "value": "bypassPermissions", ... }],
   "mcpServers": [{ "name": "github", "transport": "stdio", "commandName": "npx", "envNames": ["GITHUB_TOKEN"], "approval": "approved", "toolPermissions": "unknown", ... }],
-  "findings": [{ "ruleId": "R001", "level": "HIGH", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "..." }],
+  "findings": [{ "ruleId": "R001", "level": "HIGH", "title": "...", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "..." }],
   "unparsed": [{ "file": ".claude/settings.json", "pointer": "hooks", "reason": "..." }],
   "summary": { "files": 3, "rules": 12, "mcpServers": 3, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
   "disclaimer": "..."
 }
 ```
 
-## 開発
+## Development
 
 ```bash
 npm install
 npm test           # Vitest
 npm run typecheck
-npm run build      # dist/ に出力
-node dist/cli.js scan test/fixtures/risky-project
+npm run build      # outputs to dist/
+node dist/cli.js scan test/fixtures/risky-project --lang en
 ```
 
-テストは実在しないダミー設定だけを使います。トークン形式のダミー値はリポジトリのシークレットスキャンに反応しないよう、テスト実行時に組み立てています（[test/helpers.ts](test/helpers.ts)）。
+Tests use only fake settings. Token-shaped dummy values are assembled at runtime so that repository secret scanners do not flag them ([test/helpers.ts](test/helpers.ts)).
 
-### 構成
+### Layout
 
 ```
 src/
-  cli.ts / program.ts      CLI（Commander.js）
-  scan.ts                  検出 → 解析 → 正規化 → 検査 の流れをまとめる
-  discovery/discover.ts    Config Discovery：決まった場所の候補を列挙
-  parsers/claude.ts        Claude Code パーサー
-  parsers/cursor.ts        Cursor パーサー
-  parsers/common.ts        MCP サーバー定義など共通処理
-  rules/r00x-*.ts          Security Rule Engine：検査ルール（1ルール1ファイル）
+  cli.ts / program.ts      CLI (Commander.js)
+  scan.ts                  discovery → parsing → normalization → checks
+  discovery/discover.ts    Config Discovery: lists candidate locations
+  parsers/claude.ts        Claude Code parser
+  parsers/cursor.ts        Cursor parser
+  parsers/common.ts        shared logic such as MCP server definitions
+  rules/r00x-*.ts          Security Rule Engine: one check per file
   report/terminal.ts|json.ts  Report Generator
-  util/safeRead.ts         読み取り専用・シンボリックリンク対策付きのファイル読み込み
-  util/secrets.ts          認証情報らしき文字列の検出と伏せ字
-  types.ts                 共通データ形式
+  util/safeRead.ts         read-only file access with symlink protection
+  util/secrets.ts          credential detection and redaction
+  types.ts                 common data model
+  i18n.ts                  Japanese / English messages
 ```
 
-### 検査ルールを追加する
+### Adding a check
 
-1. `src/rules/` に `SecurityRule`（`id` / `title` / `description` / `check`）を実装したファイルを追加します
-2. `src/rules/index.ts` の `SECURITY_RULES` に登録します
-3. `test/rules.test.ts` に検出する例・検出しない例を追加します
+1. Add a file under `src/rules/` that implements `SecurityRule` (`id` / `title` / `description` / `check`)
+2. Register it in `SECURITY_RULES` in `src/rules/index.ts`
+3. Add examples that should and should not match to `test/rules.test.ts`
 
-`check` には全エージェントのルール・設定・MCP サーバーが共通形式で渡されます。秘密情報を `evidence` に入れないでください。
+`check` receives the rules, settings, and MCP servers of every agent in the common format. Never put secrets in `evidence`.
 
-### 対応エージェントを追加する
+User-facing strings (`title` / `description` / `reason` / `recommendation`) are written in both languages with `tx('日本語', 'English')`; the language is chosen right before output. `test/i18n.test.ts` catches missing English translations and Japanese leaking into English output.
 
-1. `src/types.ts` の `AgentId` に追加します
-2. `src/discovery/discover.ts` に設定ファイルの場所を追加します
-3. `src/parsers/` にパーサーを追加し、`src/scan.ts` の `parseByKind` から呼びます。知らないキーは `unparsed` に入れ、推測で権限を補わないでください
+### Adding an agent
 
-## ライセンス
+1. Add it to `AgentId` in `src/types.ts`
+2. Add its config locations to `src/discovery/discover.ts`
+3. Add a parser under `src/parsers/` and call it from `parseByKind` in `src/scan.ts`. Put unknown keys in `unparsed`; never fill in permissions by guessing
+
+## License
 
 [Apache License 2.0](LICENSE)

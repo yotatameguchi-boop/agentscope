@@ -36,7 +36,7 @@ describe('scan: 固定フィクスチャ', () => {
     const byPath = Object.fromEntries(r.files.map((f) => [f.displayPath, f]));
     expect(byPath['.claude/settings.json']!.status).toBe('parse-error');
     expect(byPath['.mcp.json']!.status).toBe('parsed');
-    expect(r.unparsed).toEqual([expect.objectContaining({ file: '.mcp.json', pointer: '(ルート)' })]);
+    expect(r.unparsed).toEqual([expect.objectContaining({ file: '.mcp.json', pointer: '(root)' })]);
   });
 
   it('設定ファイルがなければ空の結果を返す', async () => {
@@ -94,7 +94,7 @@ describe('scan: オプション', () => {
   });
 
   it('存在しないディレクトリはエラーにする', async () => {
-    await expect(scan({ root: '/definitely/not/here/agentscope' })).rejects.toThrow(/見つかりません/);
+    await expect(scan({ root: '/definitely/not/here/agentscope' })).rejects.toThrow(/not found/);
   });
 
   it.skipIf(noSymlink)('プロジェクト外を指すシンボリックリンクの設定は読まずにスキップと表示する', async () => {

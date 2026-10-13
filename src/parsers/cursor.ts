@@ -1,7 +1,8 @@
 import type { McpTransport, ParsedConfig, PermissionRule, RuleEffect } from '../types.js';
 import { isPlainObject, joinPointer } from '../util/jsonc.js';
 import { redactIfSecret, scanForSecrets } from '../util/secrets.js';
-import { emptyParsed, parseMcpServers, stringArray, unparsed, type ParseContext } from './common.js';
+import { tx } from '../i18n.js';
+import { emptyParsed, MSG, parseMcpServers, stringArray, unparsed, type ParseContext } from './common.js';
 
 /**
  * Cursor の設定パーサー。
@@ -24,37 +25,40 @@ export function inferCursorTransport(def: Record<string, unknown>): McpTransport
 export function parseCursorMcpJson(ctx: ParseContext, json: unknown): ParsedConfig {
   const out = emptyParsed();
   if (!isPlainObject(json)) {
-    out.unparsed.push(unparsed(ctx, '', 'トップレベルがオブジェクトではないため解析できません'));
+    out.unparsed.push(unparsed(ctx, '', MSG.rootNotObject));
     return out;
   }
   out.secretHits.push(...scanForSecrets(json, 'cursor', ctx.file));
-  if (json.mcpServers === undefined) out.unparsed.push(unparsed(ctx, 'mcpServers', 'mcpServers が見つかりません'));
+  if (json.mcpServers === undefined) out.unparsed.push(unparsed(ctx, 'mcpServers', MSG.noMcpServers));
   const servers = parseMcpServers(ctx, json.mcpServers, 'mcpServers', out, inferCursorTransport);
   for (const s of servers) {
-    s.approvalNote = 'Cursor ではサーバーの有効・無効を IDE の設定画面で管理するため、設定ファイルからは不明';
+    s.approvalNote = tx(
+      'Cursor ではサーバーの有効・無効を IDE の設定画面で管理するため、設定ファイルからは不明',
+      'Cursor manages enabling servers in the IDE settings, so this is unknown from config files',
+    );
   }
   out.mcpServers.push(...servers);
   for (const key of Object.keys(json)) {
-    if (key !== 'mcpServers') out.unparsed.push(unparsed(ctx, joinPointer('', key), 'AgentScope が知らないキーです'));
+    if (key !== 'mcpServers') out.unparsed.push(unparsed(ctx, joinPointer('', key), MSG.unknownKey));
   }
   return out;
 }
 
-const PERMISSIONS_NOTE = 'permissions.json の許可リストは IDE 側の許可リストを置き換えます';
+const PERMISSIONS_NOTE = tx('permissions.json の許可リストは IDE 側の許可リストを置き換えます', 'Allowlists in permissions.json replace the IDE allowlist');
 
 export function parseCursorPermissions(ctx: ParseContext, json: unknown): ParsedConfig {
   const out = emptyParsed();
   if (!isPlainObject(json)) {
-    out.unparsed.push(unparsed(ctx, '', 'トップレベルがオブジェクトではないため解析できません'));
+    out.unparsed.push(unparsed(ctx, '', MSG.rootNotObject));
     return out;
   }
   out.secretHits.push(...scanForSecrets(json, 'cursor', ctx.file));
 
-  const ignored = 'Cursor は文字列以外の要素を無視します';
+  const ignored = tx('Cursor は文字列以外の要素を無視します', 'Cursor ignores non-string entries');
   for (const item of stringArray(ctx, json.mcpAllowlist, 'mcpAllowlist', out, ignored)) {
     const idx = item.value.indexOf(':');
     if (idx === -1) {
-      out.unparsed.push(unparsed(ctx, item.pointer, '「サーバー:ツール」の形式ではないため Cursor に無視されます'));
+      out.unparsed.push(unparsed(ctx, item.pointer, tx('「サーバー:ツール」の形式ではないため Cursor に無視されます', 'Not in "server:tool" form, so Cursor ignores it')));
       continue;
     }
     out.rules.push(rule(ctx, {
@@ -78,13 +82,13 @@ export function parseCursorPermissions(ctx: ParseContext, json: unknown): Parsed
       raw: item.value,
       nativeKind: 'cursor.terminalAllowlist',
       source: { file: ctx.file, pointer: item.pointer },
-      note: `前方一致で判定されます。${PERMISSIONS_NOTE}`,
+      note: tx(`前方一致で判定されます。${PERMISSIONS_NOTE.ja}`, `Matched by prefix. ${PERMISSIONS_NOTE.en}`),
     }));
   }
 
   if (json.autoRun !== undefined) {
     if (!isPlainObject(json.autoRun)) {
-      out.unparsed.push(unparsed(ctx, 'autoRun', 'オブジェクトではないため解析できません'));
+      out.unparsed.push(unparsed(ctx, 'autoRun', MSG.notObject));
     } else {
       const pairs: Array<[string, RuleEffect]> = [
         ['allow_instructions', 'guidance-allow'],
@@ -100,13 +104,16 @@ export function parseCursorPermissions(ctx: ParseContext, json: unknown): Parsed
             raw: item.value,
             nativeKind: `cursor.autoRun.${key}`,
             source: { file: ctx.file, pointer: item.pointer },
-            note: 'Auto-review 分類器への自然言語のヒントです。強制力はなく、内容の効果は判定していません',
+            note: tx(
+              'Auto-review 分類器への自然言語のヒントです。強制力はなく、内容の効果は判定していません',
+              'A natural-language hint for the Auto-review classifier. It is not enforced, and its effect is not assessed',
+            ),
           }));
         }
       }
       for (const key of Object.keys(json.autoRun)) {
         if (key !== 'allow_instructions' && key !== 'block_instructions') {
-          out.unparsed.push(unparsed(ctx, joinPointer('autoRun', key), 'AgentScope が知らないキーです'));
+          out.unparsed.push(unparsed(ctx, joinPointer('autoRun', key), MSG.unknownKey));
         }
       }
     }
@@ -114,7 +121,7 @@ export function parseCursorPermissions(ctx: ParseContext, json: unknown): Parsed
 
   for (const key of Object.keys(json)) {
     if (!['mcpAllowlist', 'terminalAllowlist', 'autoRun'].includes(key)) {
-      out.unparsed.push(unparsed(ctx, joinPointer('', key), 'AgentScope が知らないキーです'));
+      out.unparsed.push(unparsed(ctx, joinPointer('', key), MSG.unknownKey));
     }
   }
   return out;

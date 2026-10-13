@@ -1,16 +1,27 @@
+import { tx } from '../i18n.js';
 import type { Finding } from '../types.js';
 import { redactIfSecret } from '../util/secrets.js';
 import { finding, type SecurityRule } from './types.js';
 
-const rule = { id: 'R002', title: 'すべての MCP ツールを自動承認する設定' };
+const rule = { id: 'R002', title: tx('すべての MCP ツールを自動承認する設定', 'All MCP tools are auto-approved') };
+
+const REC_CLAUDE = tx(
+  '必要なツールだけを「mcp__<server>__<tool>」の形で個別に allow に入れてください。',
+  'Add only the tools you need to allow, one by one, as "mcp__<server>__<tool>".',
+);
+const REC_CURSOR = tx(
+  '必要なツールだけを「server:tool」の形で mcpAllowlist に入れてください。',
+  'Add only the tools you need to mcpAllowlist as "server:tool".',
+);
 
 export const r002: SecurityRule = {
   ...rule,
-  description: 'MCP サーバーのツールをまとめて承認なしで実行できる設定や、プロジェクトの MCP サーバーを一括承認する設定を検出します。',
+  description: tx(
+    'MCP サーバーのツールをまとめて承認なしで実行できる設定や、プロジェクトの MCP サーバーを一括承認する設定を検出します。',
+    'Detects settings that let MCP tools run without approval in bulk, or that approve all project MCP servers at once.',
+  ),
   check(ctx) {
     const out: Finding[] = [];
-    const recClaude = '必要なツールだけを「mcp__<server>__<tool>」の形で個別に allow に入れてください。';
-    const recCursor = '必要なツールだけを「server:tool」の形で mcpAllowlist に入れてください。';
 
     for (const r of ctx.rules) {
       if (r.effect !== 'allow' || r.category !== 'mcp') continue;
@@ -26,8 +37,11 @@ export const r002: SecurityRule = {
           out.push(finding(rule, {
             ...base,
             level: 'INFO',
-            reason: 'サーバー名を特定しないワイルドカードの allow ルールは Claude Code に無視されますが、意図としては全 MCP ツールの自動承認です',
-            recommendation: recClaude,
+            reason: tx(
+              'サーバー名を特定しないワイルドカードの allow ルールは Claude Code に無視されますが、意図としては全 MCP ツールの自動承認です',
+              'Claude Code ignores allow rules whose server name is a wildcard, but the intent is to auto-approve every MCP tool',
+            ),
+            recommendation: REC_CLAUDE,
           }));
           continue;
         }
@@ -35,8 +49,11 @@ export const r002: SecurityRule = {
           out.push(finding(rule, {
             ...base,
             level: 'MEDIUM',
-            reason: `MCP サーバー「${server}」のすべてのツールを承認なしで実行できます（ツールの一覧は設定ファイルからは分かりません）`,
-            recommendation: recClaude,
+            reason: tx(
+              `MCP サーバー「${server}」のすべてのツールを承認なしで実行できます（ツールの一覧は設定ファイルからは分かりません）`,
+              `Every tool of MCP server "${server}" can run without approval (the tool list is not visible from config files)`,
+            ),
+            recommendation: REC_CLAUDE,
           }));
         }
         continue;
@@ -50,11 +67,29 @@ export const r002: SecurityRule = {
       const serverAll = server === '*' || server === '';
       const toolAll = tool === '*' || tool === '';
       if (serverAll && toolAll) {
-        out.push(finding(rule, { ...base, level: 'HIGH', reason: 'すべての MCP サーバーのすべてのツールを承認なしで実行できます', recommendation: recCursor }));
+        out.push(finding(rule, {
+          ...base,
+          level: 'HIGH',
+          reason: tx('すべての MCP サーバーのすべてのツールを承認なしで実行できます', 'Every tool of every MCP server can run without approval'),
+          recommendation: REC_CURSOR,
+        }));
       } else if (toolAll) {
-        out.push(finding(rule, { ...base, level: 'MEDIUM', reason: `MCP サーバー「${server}」のすべてのツールを承認なしで実行できます`, recommendation: recCursor }));
+        out.push(finding(rule, {
+          ...base,
+          level: 'MEDIUM',
+          reason: tx(`MCP サーバー「${server}」のすべてのツールを承認なしで実行できます`, `Every tool of MCP server "${server}" can run without approval`),
+          recommendation: REC_CURSOR,
+        }));
       } else if (serverAll) {
-        out.push(finding(rule, { ...base, level: 'MEDIUM', reason: `すべての MCP サーバーの「${tool}」ツールを承認なしで実行できます（今後追加されるサーバーも含みます）`, recommendation: recCursor }));
+        out.push(finding(rule, {
+          ...base,
+          level: 'MEDIUM',
+          reason: tx(
+            `すべての MCP サーバーの「${tool}」ツールを承認なしで実行できます（今後追加されるサーバーも含みます）`,
+            `The "${tool}" tool of every MCP server can run without approval (including servers added later)`,
+          ),
+          recommendation: REC_CURSOR,
+        }));
       }
     }
 
@@ -63,11 +98,17 @@ export const r002: SecurityRule = {
         out.push(finding(rule, {
           level: 'MEDIUM',
           agent: s.agent,
-          reason: 'プロジェクトの .mcp.json に書かれた MCP サーバーが、確認なしで起動・利用されます。リポジトリに追加されたサーバーもそのまま有効になります',
+          reason: tx(
+            'プロジェクトの .mcp.json に書かれた MCP サーバーが、確認なしで起動・利用されます。リポジトリに追加されたサーバーもそのまま有効になります',
+            'MCP servers listed in the project .mcp.json are started and used without confirmation. Servers added to the repository are enabled as-is',
+          ),
           file: s.source.file,
           pointer: s.source.pointer,
           evidence: 'enableAllProjectMcpServers: true',
-          recommendation: 'enableAllProjectMcpServers を外し、信頼できるサーバーだけを enabledMcpjsonServers に列挙してください。',
+          recommendation: tx(
+            'enableAllProjectMcpServers を外し、信頼できるサーバーだけを enabledMcpjsonServers に列挙してください。',
+            'Remove enableAllProjectMcpServers and list only trusted servers in enabledMcpjsonServers.',
+          ),
         }));
       }
     }

@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { tx, type Text } from '../i18n.js';
 import type { AgentId, ConfigKind, ConfigScope } from '../types.js';
 import { isInside } from '../util/safeRead.js';
 
@@ -10,7 +11,7 @@ export interface Candidate {
   /** project 系のファイルは対象ディレクトリの外へのシンボリックリンクを読まない */
   confineTo?: string;
   /** unsupported のときの説明 */
-  unsupportedReason?: string;
+  unsupportedReason?: Text;
 }
 
 export interface DiscoverOptions {
@@ -53,7 +54,7 @@ export function discoverCandidates(opts: DiscoverOptions): Candidate[] {
         scope: 'project',
         path: p(root, '.cursor', 'cli.json'),
         confineTo: root,
-        unsupportedReason: 'Cursor CLI の権限設定（cli.json）は v0.1 では解析対象外です',
+        unsupportedReason: tx('Cursor CLI の権限設定（cli.json）は v0.1 では解析対象外です', 'Cursor CLI permission settings (cli.json) are not supported in v0.1'),
       },
     );
     if (opts.includeGlobal) {
@@ -65,7 +66,7 @@ export function discoverCandidates(opts: DiscoverOptions): Candidate[] {
           kind: 'unsupported',
           scope: 'user',
           path: p(home, '.cursor', 'cli-config.json'),
-          unsupportedReason: 'Cursor CLI の権限設定（cli-config.json）は v0.1 では解析対象外です',
+          unsupportedReason: tx('Cursor CLI の権限設定（cli-config.json）は v0.1 では解析対象外です', 'Cursor CLI permission settings (cli-config.json) are not supported in v0.1'),
         },
       );
     }

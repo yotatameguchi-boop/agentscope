@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { localize, tx, type Lang, type Text } from './i18n.js';
 import { discoverCandidates, toDisplayPath, type Candidate } from './discovery/discover.js';
 import {
   parseClaudeGlobalState,
@@ -13,7 +14,7 @@ import {
 import type { ParseContext } from './parsers/common.js';
 import { parseCursorMcpJson, parseCursorPermissions } from './parsers/cursor.js';
 import { runRules } from './rules/index.js';
-import type { AgentId, ConfigFile, ParsedConfig, RiskLevel, ScanResult } from './types.js';
+import type { AgentId, ConfigFile, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
 import { parseJsonc } from './util/jsonc.js';
 import { safeReadFile } from './util/safeRead.js';
 import { VERSION } from './version.js';
@@ -29,9 +30,21 @@ export interface ScanOptions {
   home?: string;
 }
 
-export const DISCLAIMER =
+export const DISCLAIMER = tx(
   'この結果は設定ファイルに書かれた内容の静的解析です。実際に行使できる権限は、エージェントのバージョン、組織の管理設定、' +
-  '起動時のオプション、IDE 側の設定、MCP サーバーの実装によって変わります。検出がないことは安全を保証しません。';
+    '起動時のオプション、IDE 側の設定、MCP サーバーの実装によって変わります。検出がないことは安全を保証しません。',
+  'This is a static analysis of what is written in configuration files. The permissions that can actually be exercised depend on ' +
+    'the agent version, organization-managed settings, launch options, IDE settings, and MCP server implementations. ' +
+    'Having no findings does not mean the setup is safe.',
+);
+
+/** 利用者に見せるエラー。文言は表示時に言語を選ぶ */
+export class AgentScopeError extends Error {
+  constructor(readonly text: Text) {
+    super(text.en);
+    this.name = 'AgentScopeError';
+  }
+}
 
 export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   const root = path.resolve(opts.root ?? process.cwd());
@@ -40,7 +53,7 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   const includeGlobal = opts.includeGlobal ?? false;
 
   const st = await fs.stat(root).catch(() => undefined);
-  if (!st?.isDirectory()) throw new Error(`対象ディレクトリが見つかりません: ${root}`);
+  if (!st?.isDirectory()) throw new AgentScopeError(tx(`対象ディレクトリが見つかりません: ${root}`, `Target directory not found: ${root}`));
   const realRoot = await fs.realpath(root);
 
   const files: ConfigFile[] = [];
@@ -115,6 +128,12 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, findings: counts },
     disclaimer: DISCLAIMER,
   };
+}
+
+/** 文言を1つの言語に確定させる。lang は JSON 出力にも含める */
+export function localizeResult(result: ScanResult, lang: Lang): LocalizedScanResult {
+  const { tool, ...rest } = localize(result, lang);
+  return { tool, lang, ...rest };
 }
 
 function parseByKind(c: Candidate, ctx: ParseContext, json: unknown, projectKeys: string[]): ParsedConfig {

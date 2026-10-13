@@ -53,12 +53,13 @@ describe('parseClaudeSettings', () => {
     ]);
     expect(r.rules[0]!.nativeKind).toBe('claude.permissions.allow');
     expect(r.rules[0]!.source).toEqual({ file: '.claude/settings.json', pointer: 'permissions.allow[0]' });
-    expect(r.rules[4]!.note).toMatch(/知らないツール/);
+    expect(r.rules[4]!.note?.ja).toMatch(/知らないツール/);
+    expect(r.rules[4]!.note?.en).toMatch(/not known/);
     expect(r.settings.map((s) => [s.key, s.value])).toEqual([
       ['permissions.defaultMode', 'acceptEdits'],
       ['permissions.additionalDirectories', '../shared'],
       ['enableAllProjectMcpServers', 'false'],
-      ['env', 'NODE_ENV（値は表示しません）'],
+      ['env', { ja: 'NODE_ENV（値は表示しません）', en: 'NODE_ENV (values not shown)' }],
     ]);
     expect(r.unparsed).toEqual([]); // model は権限に無関係な既知キーなので未解析にしない
   });
@@ -82,7 +83,7 @@ describe('parseClaudeSettings', () => {
 
   it('括弧付きの mcp__ ルールは無視される旨を注記する', () => {
     const r = parseClaudeSettings(claudeCtx, { permissions: { allow: ['mcp__gh__run(x)'] } });
-    expect(r.rules[0]!.note).toMatch(/無視/);
+    expect(r.rules[0]!.note?.ja).toMatch(/無視/);
   });
 
   it('apiKeyHelper のコマンドや env の値を表示用データに含めない', () => {
@@ -174,7 +175,7 @@ describe('Cursor', () => {
       ['guidance-allow', 'other', 'cursor.autoRun.allow_instructions', 'tests are fine'],
       ['guidance-block', 'other', 'cursor.autoRun.block_instructions', 'no deploys'],
     ]);
-    expect(r.rules[2]!.note).toMatch(/強制力はなく/);
+    expect(r.rules[2]!.note?.ja).toMatch(/強制力はなく/);
     expect(r.unparsed.map((u) => u.pointer)).toEqual(['mcpAllowlist[2]', 'mcpAllowlist[1]', 'autoRun.extra', 'future']);
   });
 

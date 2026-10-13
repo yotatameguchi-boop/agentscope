@@ -1,5 +1,6 @@
 import { constants as fsc, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { tx, type Text } from '../i18n.js';
 
 /** 設定ファイルとして読む最大サイズ。~/.claude.json は大きくなりがちなので余裕を持たせる */
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -7,7 +8,7 @@ export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 export type ReadOutcome =
   | { ok: true; text: string; symlinkTarget?: string }
   | { ok: false; missing: true }
-  | { ok: false; missing: false; reason: string; symlinkTarget?: string };
+  | { ok: false; missing: false; reason: Text; symlinkTarget?: string };
 
 export interface SafeReadOptions {
   /**
@@ -31,7 +32,7 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
     lst = await fs.lstat(filePath);
   } catch (err) {
     if (isNotFound(err)) return { ok: false, missing: true };
-    return { ok: false, missing: false, reason: `ファイル情報を取得できません (${errCode(err)})` };
+    return { ok: false, missing: false, reason: tx(`ファイル情報を取得できません (${errCode(err)})`, `Cannot stat the file (${errCode(err)})`) };
   }
 
   // ファイル自体だけでなく途中のディレクトリ（.claude/ など）がリンクの場合も実体を確認する
@@ -40,7 +41,7 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
     target = await fs.realpath(filePath);
   } catch (err) {
     // リンク切れはファイルが存在しないのと同じ扱いにはせず、明示する
-    return { ok: false, missing: false, reason: `シンボリックリンクの解決に失敗しました (${errCode(err)})` };
+    return { ok: false, missing: false, reason: tx(`シンボリックリンクの解決に失敗しました (${errCode(err)})`, `Failed to resolve the symbolic link (${errCode(err)})`) };
   }
   const symlinkTarget = lst.isSymbolicLink() ? target : undefined;
   if (opts.confineTo) {
@@ -49,7 +50,10 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
       return {
         ok: false,
         missing: false,
-        reason: 'シンボリックリンクが対象ディレクトリの外を指しているため読み取りませんでした',
+        reason: tx(
+          'シンボリックリンクが対象ディレクトリの外を指しているため読み取りませんでした',
+          'Not read because the symbolic link points outside the target directory',
+        ),
         symlinkTarget,
       };
     }
@@ -64,25 +68,28 @@ export async function safeReadFile(filePath: string, opts: SafeReadOptions = {})
     handle = await fs.open(target, fsc.O_RDONLY | noFollow | nonBlock);
   } catch (err) {
     if (isNotFound(err)) return { ok: false, missing: true };
-    return { ok: false, missing: false, reason: `ファイルを開けません (${errCode(err)})`, symlinkTarget };
+    return { ok: false, missing: false, reason: tx(`ファイルを開けません (${errCode(err)})`, `Cannot open the file (${errCode(err)})`), symlinkTarget };
   }
   try {
     const st = await handle.stat();
     if (!st.isFile()) {
-      return { ok: false, missing: false, reason: '通常のファイルではないため読み取りませんでした', symlinkTarget };
+      return { ok: false, missing: false, reason: tx('通常のファイルではないため読み取りませんでした', 'Not read because it is not a regular file'), symlinkTarget };
     }
     if (st.size > MAX_FILE_BYTES) {
       return {
         ok: false,
         missing: false,
-        reason: `ファイルサイズが上限（${MAX_FILE_BYTES / 1024 / 1024}MB）を超えているため読み取りませんでした`,
+        reason: tx(
+          `ファイルサイズが上限（${MAX_FILE_BYTES / 1024 / 1024}MB）を超えているため読み取りませんでした`,
+          `Not read because the file exceeds the size limit (${MAX_FILE_BYTES / 1024 / 1024}MB)`,
+        ),
         symlinkTarget,
       };
     }
     const text = await handle.readFile({ encoding: 'utf8' });
     return { ok: true, text: stripBom(text), symlinkTarget };
   } catch (err) {
-    return { ok: false, missing: false, reason: `ファイルを読み取れません (${errCode(err)})`, symlinkTarget };
+    return { ok: false, missing: false, reason: tx(`ファイルを読み取れません (${errCode(err)})`, `Cannot read the file (${errCode(err)})`), symlinkTarget };
   } finally {
     await handle.close();
   }

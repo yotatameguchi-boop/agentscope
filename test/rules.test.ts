@@ -95,7 +95,8 @@ describe('R003 権限チェックの緩和', () => {
     expect(levels(claude(mode, 'user'), 'R003')).toEqual(['HIGH']);
     const proj = claude(mode, 'project').filter((x) => x.ruleId === 'R003');
     expect(proj.map((x) => x.level)).toEqual(['MEDIUM']);
-    expect(proj[0]!.reason).toMatch(/v2\.1\.257/);
+    expect(proj[0]!.reason.ja).toMatch(/v2\.1\.257/);
+    expect(proj[0]!.reason.en).toMatch(/v2\.1\.257/);
   });
 
   it.each([

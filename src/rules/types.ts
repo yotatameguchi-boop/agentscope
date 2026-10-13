@@ -1,3 +1,4 @@
+import type { Text } from '../i18n.js';
 import type { AgentId, ConfigFile, Finding, McpServer, PermissionRule, PermissionSetting, SecretHit } from '../types.js';
 
 export interface RuleContext {
@@ -12,8 +13,8 @@ export interface RuleContext {
 /** 検査ルール。外部コントリビューターはこの形のオブジェクトを追加し、rules/index.ts に登録する */
 export interface SecurityRule {
   id: string;
-  title: string;
-  description: string;
+  title: Text;
+  description: Text;
   check(ctx: RuleContext): Finding[];
 }
 
