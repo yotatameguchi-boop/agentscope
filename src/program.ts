@@ -21,6 +21,7 @@ const ScanCliOptions = z.object({
   lang: z.enum(LANGS).optional(),
   launch: z.array(z.string()),
   launchFiles: z.boolean(),
+  includeEnv: z.boolean(),
 });
 
 const HELP = {
@@ -38,7 +39,8 @@ const HELP = {
     noColor: '色を付けずに表示する',
     lang: '表示言語（既定: 環境の言語設定から判定）',
     launch: '起動コマンドを文字列で渡して、起動時のオプションも分析する（実行はしない。複数指定可）',
-    noLaunchFiles: 'package.json の scripts などから起動コマンドを探さない',
+    noLaunchFiles: 'package.json の scripts などから起動コマンド・環境変数を探さない',
+    includeEnv: '実行中のシェルの環境変数も分析する（権限・安全性に関わるものだけ。秘密情報の値は表示しない）',
   },
   en: {
     program:
@@ -54,7 +56,8 @@ const HELP = {
     noColor: 'disable colors',
     lang: 'output language (default: detected from the environment locale)',
     launch: 'also analyze launch options by passing a launch command as a string (never executed; repeatable)',
-    noLaunchFiles: 'do not look for launch commands in package.json scripts and similar files',
+    noLaunchFiles: 'do not look for launch commands and environment variables in package.json scripts and similar files',
+    includeEnv: 'also analyze environment variables of the current shell (only security-related ones; secret values are never shown)',
   },
 } satisfies Record<Lang, Record<string, string>>;
 
@@ -103,6 +106,7 @@ export function buildProgram(io: ProgramIO = defaultIO, lang: Lang = detectLang(
     .option('-g, --include-global', t.global, false)
     .option('--launch <command>', t.launch, (v: string, prev: string[]) => [...prev, v], [] as string[])
     .option('--no-launch-files', t.noLaunchFiles)
+    .option('-e, --include-env', t.includeEnv, false)
     .option('--no-color', t.noColor)
     .addOption(langOption())
     .helpOption('-h, --help', t.help)
@@ -116,6 +120,7 @@ export function buildProgram(io: ProgramIO = defaultIO, lang: Lang = detectLang(
           includeGlobal: opts.includeGlobal,
           launch: opts.launch,
           launchFiles: opts.launchFiles,
+          env: opts.includeEnv,
         }),
         outLang,
       );

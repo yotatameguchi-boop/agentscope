@@ -42,6 +42,7 @@ agentscope scan --agent cursor     # Cursor の設定だけ
 agentscope scan --format json      # JSON で出力
 agentscope scan --include-global   # ユーザー単位の設定も分析
 agentscope scan --launch "claude -p --dangerously-skip-permissions"   # 起動コマンドも分析（実行はしない）
+agentscope scan --include-env      # 実行中のシェルの環境変数も分析
 agentscope --help
 ```
 
@@ -53,7 +54,8 @@ agentscope --help
 | `--no-color` | 色を付けない（`NO_COLOR` 環境変数でも無効化） | TTY のとき色付き |
 | `--lang <ja\|en>` | 表示言語（レポート・JSON・ヘルプ） | 環境から判定 |
 | `--launch <command>` | 起動時のオプションを分析する起動コマンド。文字列として解析し、実行はしない。複数指定可 | なし |
-| `--no-launch-files` | プロジェクト内のファイルから起動コマンドを探さない（[起動時のオプション](#起動時のオプション)を参照） | 探す |
+| `--no-launch-files` | プロジェクト内のファイルから起動コマンド・環境変数を探さない（[起動時のオプション](#起動時のオプション)を参照） | 探す |
+| `-e, --include-env` | 実行中のシェルの環境変数も分析する（[環境変数](#環境変数)を参照） | 読まない |
 
 表示言語は `--lang` を最優先し、次に環境変数 `AGENTSCOPE_LANG`、`LC_ALL` / `LC_MESSAGES` / `LANG` の順で判定します。日本語のロケールなら日本語、それ以外は英語です。
 
@@ -130,6 +132,32 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 - 設定ファイルの `disableBypassPermissionsMode: "disable"` や、同じ起動の `--restricted` があれば、`--dangerously-skip-permissions` は効かないと判定します
 - 起動コマンド中の秘密情報（`ANTHROPIC_API_KEY=...`、`--api-key ...`）は R004 で検出し、値は表示しません
 
+### 環境変数
+
+環境変数には、安全チェックを止めたり、データの送信先を変えたりするものがあります。AgentScope は [src/env/catalog.ts](src/env/catalog.ts) にある変数だけを見て、それ以外は読み捨てます。
+
+| 場所 | 対象になる条件 |
+| --- | --- |
+| Claude Code の設定ファイルの `env` ブロック | 常に |
+| 起動コマンドの前の `VAR=値` | 常に |
+| `.devcontainer` の `containerEnv` / `remoteEnv`、`.github/workflows/*.yml` の `env:` | 既定（`--no-launch-files` で無効） |
+| シェルの設定ファイル（`~/.zshrc` など）の `export` / `set -x` | `-g` 指定時 |
+| AgentScope を実行しているシェルの環境変数 | `-e` / `--include-env` 指定時 |
+
+| 変数 | 検査内容 |
+| --- | --- |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0` | TLS 証明書の検証の無効化（HIGH） |
+| `CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT`、`CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT`、`CLAUDE_CODE_DISABLE_POWERSHELL_CMD_RM_DENY`、`CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT` | 削除の安全チェックの無効化（MEDIUM / LOW） |
+| `--require` / `--import` を含む `NODE_OPTIONS` | Node.js で動くすべてのプロセスへのコード読み込み（MEDIUM） |
+| `ANTHROPIC_BASE_URL` などの `*_BASE_URL` | 共有ファイルでの接続先変更、または http（MEDIUM）。それ以外は INFO。公式の `https://api.anthropic.com` は報告しない |
+| `CLAUDE_CONFIG_DIR`、`NODE_EXTRA_CA_CERTS` | INFO |
+| `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`CURSOR_API_KEY` などの資格情報 | 設定されているかどうかだけ。ファイルに値が直接書かれていれば R004 |
+
+- 資格情報の値は表示せず、URL はスキームとホスト名だけを保持します
+- 公式ドキュメントに従い、設定ファイルの `env` では無視される変数（`CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT` など）や、project / local 設定では無視される変数（`CLAUDE_CONFIG_DIR` など）は `ignored` と判定します
+- 設定ファイル間では、`env` のキーごとに通常の優先順位（managed > local > project > user）で解決します。シェルの値は、設定ファイルの値が勝つかがセッションによって異なるため、上書きされたとは扱いません
+- 実行中の環境の値はファイルに書かれたものではないため、R004 の対象にしません
+
 ### 権限モデルの違いの扱い
 
 両エージェントの設定は共通形式（`PermissionRule`）に変換しますが、意味の違いは `nativeKind` と `note` に残します。
@@ -165,6 +193,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 | R004 | 認証情報らしき文字列の直書き（既知のトークン形式、キー名、URL 内の認証情報） | HIGH / MEDIUM |
 | R005 | 広範囲のファイル操作を許可する設定（パス限定のない `Edit`、`Read(~/**)`、`.claude/**` や `.github/workflows/**` の書き換え、`~/.aws` の読み取りなど） | HIGH / MEDIUM / LOW |
 | R006 | 任意の通信先へのアクセスを許可する設定（`WebFetch`、`WebFetch(domain:*)`、`sandbox.network.allowedDomains` の `"*"`、Cursor CLI の `WebFetch(*)`） | MEDIUM |
+| R007 | 安全機能や通信先を変える環境変数（[環境変数](#環境変数)を参照） | HIGH / MEDIUM / LOW / INFO |
 | I001 | MCP サーバーの実際のツール一覧は未検証であることの明示 | INFO |
 | I002 | Cursor の IDE 側設定（Run Mode など）は未検証であることの明示 | INFO |
 | I003 | 自動実行されるコマンド（フック、`statusLine`、`apiKeyHelper` など）が設定されていることの明示。中身は表示しない | INFO |
@@ -186,7 +215,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 
 - **設定に書かれた権限と、実際に行使できる権限は一致しません。** 次の要素は分析していません
   - 組織の管理設定（Claude Code の managed settings、Cursor のチーム管理者設定）
-  - 上記の場所に書かれていない起動オプション（ターミナルで直接入力したものなど）。`--launch` で渡せば分析できます。動作を変える環境変数
+  - 上記の場所に書かれていない起動オプション・環境変数（ターミナルで直接入力したものなど）。`--launch` や `--include-env` を使えば分析できます。一覧にない環境変数
   - Cursor の IDE 設定（Run Mode、設定画面で登録した許可リスト）
   - MCP サーバーが実際に提供するツールと、その操作範囲
   - プラグイン、フック、`apiKeyHelper` などのコマンドの中身

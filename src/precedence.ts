@@ -119,7 +119,9 @@ function applyScalarPrecedence(settings: PermissionSetting[]): void {
   const byKey = new Map<string, PermissionSetting[]>();
   for (const s of settings) {
     // 起動オプションはその起動に限って効くため、設定ファイルの値を上書きしたとは扱わない
-    if (s.status !== 'active' || !SCALAR_KEYS.has(s.key) || cannotSetFromScope(s) || s.scope === 'cli') continue;
+    // 起動オプション・環境変数は設定ファイルの値を上書きしたとは扱わない（その起動・その環境に限るため）。
+    // env ブロックの値はキーごとに上位のスコープが勝つ
+    if (s.status !== 'active' || !(SCALAR_KEYS.has(s.key) || s.key.startsWith('env.')) || cannotSetFromScope(s) || s.scope === 'cli' || s.scope === 'shell') continue;
     byKey.set(`${s.agent}:${s.key}`, [...(byKey.get(`${s.agent}:${s.key}`) ?? []), s]);
   }
   for (const group of byKey.values()) {

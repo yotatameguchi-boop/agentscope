@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { envToSetting } from '../env/record.js';
 import { tx, type Text } from '../i18n.js';
 import { categorizeClaudeTool, ignoredReason, parseClaudeMcpJson, parseClaudeSettings, splitClaudeRule } from '../parsers/claude.js';
 import { emptyParsed, type ParseContext } from '../parsers/common.js';
@@ -180,6 +181,9 @@ export async function parseLaunch(words: string[], opts: LaunchOptions): Promise
   for (const [k, v] of inv.env) {
     const hit = classifySecret(k, v);
     if (hit) out.secretHits.push({ agent: inv.agent, file, pointer: at(k), ...hit });
+    // 起動コマンドの前の VAR=値 は、その起動の環境変数になる
+    const { setting } = envToSetting({ name: k, value: v, scope: 'cli', origin: 'process', source: { file, pointer: at(k) }, launchId: opts.launchId, writtenInFile: false });
+    if (setting) out.settings.push(setting);
   }
   args.forEach((a, i) => {
     if (a.trim().startsWith('{')) return; // インライン JSON は parseEmbedded で項目ごとに検査する

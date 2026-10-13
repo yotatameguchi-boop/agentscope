@@ -20,10 +20,11 @@ export type ConfigScope =
   | 'project-local' // 個人のプロジェクト設定（.claude/settings.local.json, ~/.claude.json の projects[...]）
   | 'user' // ユーザー全体の設定（~/.claude/settings.json, ~/.cursor/*）
   | 'managed' // 組織の管理設定（managed-settings.json など）。最優先で、利用者は上書きできない
-  | 'cli'; // 起動時のオプション（claude --permission-mode など）。その起動に限って効く
+  | 'cli' // 起動時のオプション（claude --permission-mode など）。その起動に限って効く
+  | 'shell'; // 環境変数（シェルの設定ファイル、CI、コンテナ、実行中の環境）
 
 /** 設定の優先順位（小さいほど優先）。Claude Code: managed > local > project > user */
-export const SCOPE_PRECEDENCE: Record<ConfigScope, number> = { managed: 0, cli: 1, 'project-local': 2, project: 3, user: 4 };
+export const SCOPE_PRECEDENCE: Record<ConfigScope, number> = { managed: 0, cli: 1, 'project-local': 2, project: 3, user: 4, shell: 5 };
 
 /**
  * ルール・設定が実際に効くかどうか。

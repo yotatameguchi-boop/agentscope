@@ -13,6 +13,8 @@ import {
 } from './parsers/claude.js';
 import type { ParseContext } from './parsers/common.js';
 import { parseCursorCli, parseCursorMcpJson, parseCursorPermissions } from './parsers/cursor.js';
+import { collectFileEnv } from './env/sources.js';
+import { envToSetting, knownEnv } from './env/record.js';
 import { collectLaunchTexts } from './launch/sources.js';
 import { parseLaunch } from './launch/parse.js';
 import { splitCommands } from './launch/tokenize.js';
@@ -38,14 +40,19 @@ export interface ScanOptions {
   launch?: string[];
   /** package.json の scripts などから起動コマンドを探す（既定: true）。includeGlobal 時はシェルの設定ファイルも見る */
   launchFiles?: boolean;
+  /**
+   * 実行中の環境変数も分析する。true なら process.env を、オブジェクトならそれを使う（テスト用）。
+   * 権限・安全性に関わる変数（env/catalog.ts）だけを見て、秘密情報の値は保持しない
+   */
+  env?: boolean | NodeJS.ProcessEnv;
 }
 
 export const DISCLAIMER = tx(
-  'この結果は設定ファイルと起動コマンドに書かれた内容の静的解析です。実際に行使できる権限は、エージェントのバージョン、組織の管理設定、' +
-    '実際に使われた起動オプション（ここで見つからなかったものを含む）、環境変数、IDE 側の設定、MCP サーバーの実装によって変わります。' +
+  'この結果は設定ファイル・起動コマンド・環境変数に書かれた内容の静的解析です。実際に行使できる権限は、エージェントのバージョン、組織の管理設定、' +
+    '実際に使われた起動オプションや環境変数（ここで見つからなかったものを含む）、IDE 側の設定、MCP サーバーの実装によって変わります。' +
     '検出がないことは安全を保証しません。',
-  'This is a static analysis of what is written in configuration files and launch commands. The permissions that can actually be exercised depend on ' +
-    'the agent version, organization-managed settings, the launch options actually used (including ones not found here), environment variables, ' +
+  'This is a static analysis of what is written in configuration files, launch commands, and environment variables. The permissions that can actually be exercised depend on ' +
+    'the agent version, organization-managed settings, the launch options and environment variables actually used (including ones not found here), ' +
     'IDE settings, and MCP server implementations. ' +
     'Having no findings does not mean the setup is safe.',
 );
@@ -152,6 +159,19 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
       unparsed.push(...lp.unparsed);
       secretHits.push(...lp.secretHits);
     }
+  }
+
+  // 環境変数（ファイルに書かれたもの・実行中の環境）
+  const envInputs = await collectFileEnv({ root, home, projectFiles: opts.launchFiles ?? true, shellFiles: (opts.launchFiles ?? true) && includeGlobal });
+  if (opts.env) {
+    for (const [name, value] of knownEnv(opts.env === true ? process.env : opts.env)) {
+      envInputs.push({ name, value, scope: 'shell', origin: 'process', source: { file: '(environment)', pointer: name }, writtenInFile: false });
+    }
+  }
+  for (const e of envInputs) {
+    const { setting, secret } = envToSetting(e);
+    if (setting && agents.includes(setting.agent)) settings.push(setting);
+    if (secret && agents.includes(secret.agent)) secretHits.push(secret);
   }
 
   applyPrecedence(rules, settings);

@@ -17,7 +17,9 @@ export const r004: SecurityRule = {
     const out: Finding[] = [];
     for (const h of ctx.secretHits) {
       const file = ctx.files.find((f) => f.displayPath === h.file);
-      const shared = file?.scope === 'project';
+      // 設定ファイル以外（ワークフローや devcontainer など）も、対象ディレクトリ内ならリポジトリで共有されうる
+      const inProject = !file && !/^(?:~|--launch|\(|\/|[A-Za-z]:)/.test(h.file);
+      const shared = file?.scope === 'project' || inProject;
       const strong = h.kind === 'value-pattern' || h.kind === 'url-credential';
       const main =
         h.kind === 'key-name'

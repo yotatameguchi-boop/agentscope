@@ -24,6 +24,7 @@ const cases = [
   [['scan', path.join(root, 'does-not-exist')], 2],
   [['scan', path.join(root, 'package.json')], 2],
   [['no-such-command'], 2],
+  [['scan', fixture, '--include-env', '--format', 'json'], 0],
   [['scan', fixture, '--launch', 'claude --dangerously-skip-permissions -p hi', '--launch', 'agent --force'], 0],
 ];
 for (const [args, code] of cases) {

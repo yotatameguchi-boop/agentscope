@@ -3,6 +3,7 @@ import type { ConfigScope, McpServer, McpTransport, ParsedConfig, PermissionRule
 import { isPlainObject } from '../util/jsonc.js';
 import { joinPointer } from '../util/pointer.js';
 import { redactIfSecret, redactName, scanForSecrets } from '../util/secrets.js';
+import { envToSetting } from '../env/record.js';
 import { tx, type Text } from '../i18n.js';
 import { emptyParsed, MSG, parseMcpServers, stringArray, unparsed, type ParseContext } from './common.js';
 
@@ -250,6 +251,12 @@ export function parseClaudeSettings(ctx: ParseContext, json: unknown): ClaudePar
         if (isPlainObject(value)) {
           const names = Object.keys(value).map(redactName).sort().join(', ');
           pushSetting(ctx, out, 'env', tx(`${names || '(なし)'}（値は表示しません）`, `${names || '(none)'} (values not shown)`), ptr);
+          // 権限・安全性に関わる変数は個別に記録する（値の秘密情報は scanForSecrets が検出済み）
+          for (const [name, v] of Object.entries(value)) {
+            if (typeof v !== 'string') continue;
+            const { setting } = envToSetting({ name, value: v, scope: ctx.scope, origin: 'settings', source: { file: ctx.file, pointer: joinPointer('env', name) }, writtenInFile: false });
+            if (setting) out.settings.push(setting);
+          }
         }
         else out.unparsed.push(unparsed(ctx, ptr, MSG.notObject));
         break;

@@ -43,6 +43,7 @@ agentscope scan --format json      # JSON output
 agentscope scan --include-global   # also analyze user-level settings
 agentscope scan --lang en          # English output
 agentscope scan --launch "claude -p --dangerously-skip-permissions"   # also analyze a launch command (never executed)
+agentscope scan --include-env      # also analyze environment variables of the current shell
 agentscope --help
 ```
 
@@ -54,7 +55,8 @@ agentscope --help
 | `--no-color` | Disable colors (`NO_COLOR` also works) | colored on a TTY |
 | `--lang <ja\|en>` | Language of the report, JSON, and help | detected |
 | `--launch <command>` | A launch command to analyze for launch options. It is parsed as a string and never executed. Repeatable | none |
-| `--no-launch-files` | Do not look for launch commands in project files (see [Launch options](#launch-options)) | look |
+| `--no-launch-files` | Do not look for launch commands and environment variables in project files (see [Launch options](#launch-options)) | look |
+| `-e, --include-env` | Also analyze environment variables of the current shell (see [Environment variables](#environment-variables)) | off |
 
 The output language is chosen from `--lang`, then `AGENTSCOPE_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`. A Japanese locale selects Japanese; anything else selects English.
 
@@ -131,6 +133,32 @@ Launch options are treated as a separate scope, `cli`:
 - `disableBypassPermissionsMode: "disable"` in settings, or `--restricted` in the same launch, makes `--dangerously-skip-permissions` ineffective
 - Secrets in launch commands (`ANTHROPIC_API_KEY=...`, `--api-key ...`) are reported by R004 and never printed
 
+### Environment variables
+
+Some environment variables turn off safety checks or change where data is sent. AgentScope looks only at the variables in [src/env/catalog.ts](src/env/catalog.ts) and ignores all others.
+
+| Where | When |
+| --- | --- |
+| `env` block of Claude Code settings files | always |
+| `VAR=value` in front of a launch command | always |
+| `containerEnv` / `remoteEnv` in `.devcontainer`, `env:` in `.github/workflows/*.yml` | by default (`--no-launch-files` turns this off) |
+| `export` / `set -x` in shell startup files (`~/.zshrc`, etc.) | with `-g` |
+| the environment of the shell running AgentScope | with `-e` / `--include-env` |
+
+| Variables | What is checked |
+| --- | --- |
+| `NODE_TLS_REJECT_UNAUTHORIZED=0` | TLS certificate verification turned off (HIGH) |
+| `CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT`, `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT`, `CLAUDE_CODE_DISABLE_POWERSHELL_CMD_RM_DENY`, `CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT` | removal safety checks turned off (MEDIUM / LOW) |
+| `NODE_OPTIONS` with `--require` / `--import` | extra code loaded into every Node.js process (MEDIUM) |
+| `ANTHROPIC_BASE_URL` and the other `*_BASE_URL` variables | endpoint changed in a shared file, or plain http (MEDIUM); otherwise INFO. The official `https://api.anthropic.com` is not reported |
+| `CLAUDE_CONFIG_DIR`, `NODE_EXTRA_CA_CERTS` | INFO |
+| `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CURSOR_API_KEY`, and other credentials | only whether they are set. A literal value written in a file is reported by R004 |
+
+- Values are never shown for credentials, and only the scheme and host are kept for URLs
+- Following the official docs, variables that Claude Code ignores in a settings `env` block (such as `CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT`) or in project / local settings (such as `CLAUDE_CONFIG_DIR`) are marked `ignored`
+- Across settings files, each `env` key follows the usual precedence (managed > local > project > user). Values from the shell are not treated as overridden, because whether the settings value wins depends on the session
+- Values from the running environment are not reported by R004, because they are not written in a file
+
 ### How the two permission models are handled
 
 Both agents' settings are converted into a common format (`PermissionRule`), while the differences are kept in `nativeKind` and `note`.
@@ -166,6 +194,7 @@ Only cases that are certain are treated as neutralized. When a deny rule covers 
 | R004 | Credential-like strings written directly (known token formats, key names, credentials in URLs) | HIGH / MEDIUM |
 | R005 | Broad file access is allowed (`Edit` without a path, `Read(~/**)`, edits to `.claude/**`, `.github/workflows/**`, reading `~/.aws`, etc.) | HIGH / MEDIUM / LOW |
 | R006 | Network access to any destination is allowed (`WebFetch`, `WebFetch(domain:*)`, `"*"` in `sandbox.network.allowedDomains`, Cursor CLI `WebFetch(*)`) | MEDIUM |
+| R007 | Environment variables that turn off safety checks or change the API endpoint (see [Environment variables](#environment-variables)) | HIGH / MEDIUM / LOW / INFO |
 | I001 | States that the actual tool list of MCP servers is not verified | INFO |
 | I002 | States that Cursor IDE settings (such as Run Mode) are not verified | INFO |
 | I003 | States that automatically executed commands are configured (hooks, `statusLine`, `apiKeyHelper`, etc.); their contents are not shown | INFO |
@@ -187,7 +216,7 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 
 - **Permissions written in configuration files are not the same as the permissions that can actually be exercised.** The following are not analyzed:
   - Organization-managed settings (Claude Code managed settings, Cursor team admin settings)
-  - Launch options that are not found in the locations above (for example typed directly in a terminal) unless you pass them with `--launch`; environment variables that change behavior
+  - Launch options and environment variables that are not found in the locations above (for example typed directly in a terminal) unless you pass them with `--launch` or `--include-env`; environment variables outside the catalog
   - Cursor IDE settings (Run Mode, allowlists registered in the settings UI)
   - The tools MCP servers actually provide, and what they can reach
   - The contents of plugins, hooks, `apiKeyHelper`, and other commands

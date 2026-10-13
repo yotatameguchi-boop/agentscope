@@ -62,7 +62,7 @@ interface Labels {
 
 const LABELS: Record<Lang, Labels> = {
   ja: {
-    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体', managed: '組織の管理設定', cli: '起動オプション' },
+    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体', managed: '組織の管理設定', cli: '起動オプション', shell: '環境変数' },
     status: { parsed: '解析済み', 'parse-error': '解析エラー', skipped: 'スキップ', unsupported: '未対応' },
     effect: { allow: '許可', ask: '要承認', deny: '禁止', 'guidance-allow': '許可寄りヒント', 'guidance-block': '拒否寄りヒント' },
     approval: { approved: '承認済み', rejected: '拒否', 'not-required': '承認不要', unknown: '不明' },
@@ -105,7 +105,7 @@ const LABELS: Record<Lang, Labels> = {
     originally: (l) => `（本来は ${l}）`,
   },
   en: {
-    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide', managed: 'organization-managed', cli: 'launch option' },
+    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide', managed: 'organization-managed', cli: 'launch option', shell: 'environment' },
     status: { parsed: 'parsed', 'parse-error': 'parse error', skipped: 'skipped', unsupported: 'unsupported' },
     effect: { allow: 'allow', ask: 'ask', deny: 'deny', 'guidance-allow': 'hint: allow', 'guidance-block': 'hint: block' },
     approval: { approved: 'approved', rejected: 'rejected', 'not-required': 'not required', unknown: 'unknown' },

@@ -7,9 +7,10 @@ import { r003 } from './r003-relaxed-checks.js';
 import { r004 } from './r004-inline-credentials.js';
 import { r005 } from './r005-broad-file-access.js';
 import { r006 } from './r006-broad-network.js';
+import { r007 } from './r007-risky-env.js';
 import type { RuleContext, SecurityRule } from './types.js';
 
-export const SECURITY_RULES: SecurityRule[] = [r001, r002, r003, r004, r005, r006, i001, i002, i003];
+export const SECURITY_RULES: SecurityRule[] = [r001, r002, r003, r004, r005, r006, r007, i001, i002, i003];
 
 export function runRules(ctx: RuleContext, rules: SecurityRule[] = SECURITY_RULES): Finding[] {
   const findings = rules.flatMap((r) => r.check(ctx)).map((f) => applyEffect(f, ctx));
