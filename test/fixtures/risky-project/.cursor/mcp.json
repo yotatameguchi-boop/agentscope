@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "docs": { "url": "https://docs.example.org/mcp" },
+    "db": {
+      "command": "/usr/local/bin/db-mcp.exe",
+      "env": { "DB_PASSWORD": "${env:DB_PASSWORD}" }
+    }
+  }
+}

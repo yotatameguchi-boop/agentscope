@@ -1,0 +1,24 @@
+{
+  // テスト用のダミー設定（JSONC: コメントと末尾カンマを含む）
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Bash(python3 *)",
+      "Bash(git:*)",
+      "Bash(npm run test *)",
+      "Edit",
+      "Read(~/**)",
+      "Edit(.claude/**)",
+      "mcp__github",
+      "mcp__*",
+      "WebFetch(domain:example.com)",
+    ],
+    "ask": ["Bash(git push *)"],
+    "deny": ["Read(./.env)", "Bash(rm *)"],
+    "defaultMode": "bypassPermissions",
+    "additionalDirectories": ["~/"],
+  },
+  "enableAllProjectMcpServers": true,
+  "hooks": {},
+  "someUnknownKey": 1,
+}

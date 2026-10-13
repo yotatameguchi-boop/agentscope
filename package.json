@@ -1,0 +1,46 @@
+{
+  "name": "agentscope",
+  "version": "0.1.0",
+  "description": "AIエージェント（Claude Code / Cursor）の権限設定を静的に分析し、リスクを可視化するCLI",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "agentscope": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "security",
+    "ai-agent",
+    "claude-code",
+    "cursor",
+    "mcp",
+    "permissions",
+    "audit"
+  ],
+  "dependencies": {
+    "commander": "^15.0.0",
+    "jsonc-parser": "^3.3.1",
+    "picocolors": "^1.1.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  }
+}

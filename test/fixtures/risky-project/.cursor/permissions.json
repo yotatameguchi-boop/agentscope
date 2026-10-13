@@ -1,0 +1,8 @@
+{
+  "mcpAllowlist": ["*:*", "docs:*", "db:query", "invalid-entry", 42],
+  "terminalAllowlist": ["bash", "git", "npm:install*", "ls"],
+  "autoRun": {
+    "allow_instructions": ["Running the test suite is fine"],
+    "block_instructions": ["Never push to the main branch"]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Bash(npm run test *)", "Edit(/src/**)"],
+    "deny": ["Read(./.env)", "Read(./secrets/**)"]
+  }
+}
