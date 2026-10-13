@@ -13,6 +13,7 @@
     "dist",
     "README.md",
     "README.ja.md",
+    "docs",
     "LICENSE"
   ],
   "engines": {
@@ -23,7 +24,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "prepare": "npm run build",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "eval:protect": "vitest run test/bench/run.test.ts",
+    "eval:protect-real": "npm run build && node scripts/eval-real.mjs"
   },
   "keywords": [
     "security",

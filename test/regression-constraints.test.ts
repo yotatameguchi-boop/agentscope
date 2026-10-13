@@ -15,6 +15,8 @@ import { FIXTURES, makeDir } from './helpers.js';
 
 const json = (v: unknown) => JSON.stringify(v);
 const PLAIN = 'Zq8wLmT4vXp2Rk9s';
+const FAKE_GH = ['gh', 'p_', 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'].join('');
+const FAKE_GH_SPLIT = FAKE_GH.slice(0, 10) + '\u200b' + FAKE_GH.slice(10);
 
 describe('1. 形式に特徴のない秘密情報', () => {
   it('秘密情報と判定した値は、出力の別の場所に現れても伏せる', async () => {
@@ -37,13 +39,28 @@ describe('1. 形式に特徴のない秘密情報', () => {
   });
 
   it('保管庫はスキャンごとに独立している（並行実行しても混ざらない）', async () => {
+    // ランダム性の判定では伏せられない値（小文字だけ）を使い、保管庫による伏せ字だけを確かめる
+    const WORDS = 'correcthorsebatterystaple';
     const [a, b] = await Promise.all([
-      scan({ root: await makeDir({ '.mcp.json': json({ mcpServers: { s: { command: 'node', env: { TOKEN: PLAIN } } } }) }), home: await makeDir() }),
-      scan({ root: await makeDir({ '.claude/settings.json': json({ permissions: { additionalDirectories: [`/x/${PLAIN}`] } }) }), home: await makeDir() }),
+      scan({ root: await makeDir({ '.mcp.json': json({ mcpServers: { s: { command: 'node', env: { TOKEN: WORDS } } } }), '.claude/settings.json': json({ permissions: { additionalDirectories: [`/x/${WORDS}`] } }) }), home: await makeDir() }),
+      scan({ root: await makeDir({ '.claude/settings.json': json({ permissions: { additionalDirectories: [`/x/${WORDS}`] } }) }), home: await makeDir() }),
     ]);
-    expect(JSON.stringify(a)).not.toContain(PLAIN);
-    // b では PLAIN を秘密情報と判定していないので、そのまま残る（a の保管庫が b に漏れていない）
-    expect(JSON.stringify(b)).toContain(PLAIN);
+    expect(JSON.stringify(a)).not.toContain(WORDS);
+    // b では WORDS を秘密情報と判定していないので、そのまま残る（a の保管庫が b に漏れていない）
+    expect(JSON.stringify(b)).toContain(WORDS);
+  });
+
+  it('見えない文字を挟んだ値も伏せる（形式による判定・保管庫による判定の両方）', async () => {
+    const r = await scan({
+      root: await makeDir({
+        '.mcp.json': json({ mcpServers: { s: { command: 'node', env: { SERVICE_TOKEN: 'correcthorsebatterystaple' } } } }),
+        '.claude/settings.json': json({ permissions: { allow: [`Bash(echo ${FAKE_GH_SPLIT})`, 'Bash(echo correct\u200bhorsebatterystaple)'] } }),
+      }),
+      home: await makeDir(),
+    });
+    const dump = JSON.stringify(r).replace(/\\u200b|\u200b/g, '');
+    expect(dump).not.toContain(FAKE_GH);
+    expect(dump).not.toContain('correcthorsebatterystaple');
   });
 
   it('ランダム性の高い長い文字列は伏せ、ハッシュ・UUID・人が付けた名前は残す', () => {

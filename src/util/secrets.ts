@@ -27,9 +27,22 @@ export const VALUE_PATTERNS: ValuePattern[] = [
   { label: tx('Stripe シークレットキー', 'a Stripe secret key'), re: /(?<![A-Za-z0-9])[sr]k_live_[0-9A-Za-z]{20,}/ },
   { label: tx('npm トークン', 'an npm token'), re: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}/ },
   { label: tx('Hugging Face トークン', 'a Hugging Face token'), re: /(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}/ },
-  { label: tx('秘密鍵', 'a private key'), re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { label: tx('JWT', 'a JWT'), re: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
-  { label: tx('Bearer トークン', 'a Bearer token'), re: /(?<![A-Za-z0-9])Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/ },
+  // 鍵の本体まで含めて1つの値として扱う（改行が実際の改行でも、JSON の \n でもよい）
+  { label: tx('秘密鍵', 'a private key'), re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?/ },
+  { label: tx('JWT', 'a JWT'), re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+  { label: tx('Bearer トークン', 'a Bearer token'), re: /(?<![A-Za-z0-9])Bearer\s+(?!\$)[A-Za-z0-9._~+/-]{8,}=*/ },
+  { label: tx('Shopify トークン', 'a Shopify token'), re: /(?<![A-Za-z0-9])shp(?:at|ss|ca|pa)_[0-9a-fA-F]{32}(?![A-Za-z0-9])/ },
+  { label: tx('Pulumi トークン', 'a Pulumi token'), re: /(?<![A-Za-z0-9])pul-[0-9a-f]{40}(?![A-Za-z0-9])/ },
+  { label: tx('DigitalOcean トークン', 'a DigitalOcean token'), re: /(?<![A-Za-z0-9])do[opr]_v1_[0-9a-f]{64}(?![A-Za-z0-9])/ },
+  { label: tx('Grafana トークン', 'a Grafana token'), re: /(?<![A-Za-z0-9])gl(?:sa|c)_[A-Za-z0-9+/=_-]{32,}/ },
+  { label: tx('age の秘密鍵', 'an age secret key'), re: /AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}/ },
+  { label: tx('Notion トークン', 'a Notion token'), re: /(?<![A-Za-z0-9])(?:ntn_[A-Za-z0-9]{40,}|secret_[A-Za-z0-9]{43})(?![A-Za-z0-9])/ },
+  { label: tx('Linear APIキー', 'a Linear API key'), re: /(?<![A-Za-z0-9])lin_(?:api|oauth)_[A-Za-z0-9]{40}(?![A-Za-z0-9])/ },
+  { label: tx('Atlassian APIトークン', 'an Atlassian API token'), re: /(?<![A-Za-z0-9])ATATT3[A-Za-z0-9_=-]{100,}/ },
+  { label: tx('Doppler トークン', 'a Doppler token'), re: /(?<![A-Za-z0-9])dp\.(?:st|ct|sa|scim|audit)\.[A-Za-z0-9._-]{40,}/ },
+  { label: tx('Terraform Cloud トークン', 'a Terraform Cloud token'), re: /(?<![A-Za-z0-9])[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_=-]{60,}/ },
+  { label: tx('Twilio APIキー', 'a Twilio API key'), re: /(?<![A-Za-z0-9])SK[0-9a-f]{32}(?![A-Za-z0-9])/ },
+  { label: tx('Mailgun APIキー', 'a Mailgun API key'), re: /(?<![A-Za-z0-9])key-[0-9a-f]{32}(?![A-Za-z0-9])/ },
   { label: tx('Basic 認証の資格情報', 'Basic auth credentials'), re: /(?<![A-Za-z0-9])Basic\s+[A-Za-z0-9+/]{12,}={0,2}/ },
   { label: tx('Azure の接続文字列', 'an Azure connection string'), re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{20,}/ },
   { label: tx('SendGrid APIキー', 'a SendGrid API key'), re: /(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/ },
@@ -40,8 +53,19 @@ export const VALUE_PATTERNS: ValuePattern[] = [
 const SECRET_KEY_RE_RAW =
   /(?:^|[_\-.])(?:api[_-]?key|apikey|secret|token|password|passwd|pwd|credential|credentials|private[_-]?key|access[_-]?key|auth|authorization|session[_-]?key|client[_-]?secret)(?:$|[_\-.])/i;
 
+/**
+ * 秘密情報の「名前」や「置き場所」を指すキー（secret-id、AUTH_URL、PASSWORD_FILE、apiKeyHelper など）。
+ * 値は秘密情報そのものではないので、キー名による判定から外す
+ */
+const NOT_SECRET_SUFFIX_RE = /(?:^|[_\-.])(?:id|ids|name|names|arn|file|path|dir|url|uri|endpoint|host|type|ttl|length|expiry|expires|expiration|hint|header|prefix|env|var|helper|command|cmd|mode|scope|scopes|provider|method|enabled|required|count|version)$/i;
+
 /** camelCase のキー名（githubToken など）も区切りとして扱う */
-export const SECRET_KEY_RE = { test: (key: string) => SECRET_KEY_RE_RAW.test(key.replace(/([a-z0-9])([A-Z])/g, '$1_$2')) };
+export const SECRET_KEY_RE = {
+  test: (key: string) => {
+    const k = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+    return SECRET_KEY_RE_RAW.test(k) && !NOT_SECRET_SUFFIX_RE.test(k);
+  },
+};
 
 // 秘密情報を直接書いていないとみなせる値（環境変数参照やプレースホルダー）
 /**
@@ -52,9 +76,11 @@ export function parseVarRef(value: string): { name: string; fallback?: string } 
   const v = value.trim();
   const bare = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
   if (bare) return { name: bare[1]! };
-  const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=])(.*))?\}$/s.exec(v);
+  // ${VAR:?メッセージ} / ${VAR?メッセージ} は「未設定ならエラー」で、既定値は持たない
+  const braced = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-=?])(.*))?\}$/s.exec(v);
   if (!braced) return undefined;
-  return braced[2] === undefined ? { name: braced[1]! } : { name: braced[1]!, fallback: braced[3]! };
+  if (braced[2] === undefined || braced[2].endsWith('?')) return { name: braced[1]! };
+  return { name: braced[1]!, fallback: braced[3]! };
 }
 
 export function isReferenceOrPlaceholder(value: string): boolean {
@@ -64,9 +90,13 @@ export function isReferenceOrPlaceholder(value: string): boolean {
   if (ref) return ref.fallback === undefined || isReferenceOrPlaceholder(ref.fallback);
   if (v.length < 8) return true; // 短すぎる値（"true", "1" など）は対象外
   if (/^\$\{(?:env|input):[^}]+\}$/.test(v)) return true; // Cursor/VS Code の ${env:VAR}, ${input:id}
+  if (/^\$\{\{[^{}]*\}\}$/.test(v)) return true; // GitHub Actions の ${{ secrets.X }}
   if (/^Bearer\s+\$\{?[A-Za-z_][\w:]*\}?$/i.test(v)) return true;
-  if (/^<[^>]+>$/.test(v)) return true; // <YOUR_TOKEN>
-  if (/^(?:x+|\*+|\.+|your[_-].*|changeme|placeholder|dummy|example|redacted|todo)$/i.test(v)) return true;
+  if (/^<[^>]*>?$/.test(v) || /^\{\{.*\}\}$/.test(v)) return true; // <YOUR_TOKEN>、{{ テンプレート }}
+  // 「あなたのパスワード」「ここにトークン」のように、日本語・中国語だけで書かれた値は説明用の仮の値
+  if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー・（）()「」\s]+$/u.test(v)) return true;
+  // よく使われる仮の値（.env.example や README に書かれるもの）
+  if (/^(?:x+|\*+|\.+|your[_-].*|.*[_-]here|change[_-]?me(?:[_-].*)?|replace[_-]?me|to[_-]?be[_-]?(?:modified|changed|replaced)|placeholder|dummy.*|example.*|sample.*|redacted|todo|tbd|secret|password|passw0rd|token|test|testing)$/i.test(v)) return true;
   if (/^(?:op|vault|keychain|aws-sm|gcp-sm):\/\//i.test(v)) return true; // シークレットマネージャー参照
   return false;
 }
@@ -77,6 +107,14 @@ function matchValuePattern(value: string): { label: Text; part: string } | undef
     if (m) return { label: p.label, part: m[0] };
   }
   return undefined;
+}
+
+/**
+ * URL のパスワード部分によく書かれる仮の値（postgres://user:password@host など）。
+ * 長さでは判定しない（admin:pw123@ のような短い本物のパスワードを見逃さないため）
+ */
+export function isUrlPasswordPlaceholder(pw: string): boolean {
+  return /^(?:\$\{?[A-Za-z_][\w:]*\}?|\$\{\{[^{}]*\}\}|password|passwd|pass|postgres|mysql|root|admin|changeme|secret|example|x+|\*+|<[^>]*>|\[[^\]]*\]|\.\.\.)$/i.test(pw);
 }
 
 /** 壊れた % エンコードでも例外を投げずにデコードする（失敗したら元の文字列を返す） */
@@ -97,7 +135,7 @@ function urlCredential(value: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (u.password && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(safeDecode(u.password))) return safeDecode(u.password);
+  if (u.password && !isUrlPasswordPlaceholder(safeDecode(u.password))) return safeDecode(u.password);
   for (const [k, v] of u.searchParams) {
     if (SECRET_KEY_RE.test(k) && !isReferenceOrPlaceholder(v)) return v;
   }
@@ -113,7 +151,7 @@ function hasUrlCredential(value: string): boolean {
  * 例: `API_KEY=abc...`、`password: abc...`、`--token abc...`、`curl -u user:pass`
  */
 function findInlineSecret(value: string): { label: Text; part: string } | undefined {
-  for (const m of value.matchAll(/(?:^|[\s;&|'"(?,])(?:export\s+)?([A-Za-z_][\w.-]*)\s*[=:]\s*(['"]?)([^\s'";&|)?]+)\2/g)) {
+  for (const m of value.matchAll(/(?:^|[\s;&|'"(?,]|(?<!\$)\{|--)(?:export\s+)?([A-Za-z_][\w.]*(?:-[\w.]+)*)['"]?\s*[=:]\s*(['"]?)(\$\{(?:[^{}\n]|\{[^{}\n]*\})*\}|[^\s'";&|)?,]+)\2/g)) {
     if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return { label: tx(`「${m[1]}」の値`, `the value of ${m[1]}`), part: secretPart(m[3]!) };
   }
   for (const m of value.matchAll(/(?:^|\s)--?([A-Za-z][\w-]*)\s+(['"]?)([^\s'"-][^\s'"]*)\2/g)) {

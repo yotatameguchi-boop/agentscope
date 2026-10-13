@@ -1,5 +1,5 @@
 {
   "permissions": { "allow": ["Bash(npm install)"] },
   "skipDangerousModePermissionPrompt": true,
-  "env": { "MY_SERVICE_PASSWORD": "dummy-password-for-tests-only" }
+  "env": { "MY_SERVICE_PASSWORD": "s3cr3t-value-for-tests-only" }
 }
