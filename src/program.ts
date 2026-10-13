@@ -19,6 +19,8 @@ const ScanCliOptions = z.object({
   includeGlobal: z.boolean(),
   color: z.boolean(),
   lang: z.enum(LANGS).optional(),
+  launch: z.array(z.string()),
+  launchFiles: z.boolean(),
 });
 
 const HELP = {
@@ -35,6 +37,8 @@ const HELP = {
     global: 'ユーザー単位の設定（~/.claude, ~/.claude.json の MCP 設定, ~/.cursor）も分析する',
     noColor: '色を付けずに表示する',
     lang: '表示言語（既定: 環境の言語設定から判定）',
+    launch: '起動コマンドを文字列で渡して、起動時のオプションも分析する（実行はしない。複数指定可）',
+    noLaunchFiles: 'package.json の scripts などから起動コマンドを探さない',
   },
   en: {
     program:
@@ -49,6 +53,8 @@ const HELP = {
     global: 'also analyze user-level settings (~/.claude, MCP settings in ~/.claude.json, ~/.cursor)',
     noColor: 'disable colors',
     lang: 'output language (default: detected from the environment locale)',
+    launch: 'also analyze launch options by passing a launch command as a string (never executed; repeatable)',
+    noLaunchFiles: 'do not look for launch commands in package.json scripts and similar files',
   },
 } satisfies Record<Lang, Record<string, string>>;
 
@@ -95,6 +101,8 @@ export function buildProgram(io: ProgramIO = defaultIO, lang: Lang = detectLang(
     .addOption(new Option('-a, --agent <agent>', t.agent).choices(['claude', 'cursor', 'all']).default('all'))
     .addOption(new Option('-f, --format <format>', t.format).choices(['text', 'json']).default('text'))
     .option('-g, --include-global', t.global, false)
+    .option('--launch <command>', t.launch, (v: string, prev: string[]) => [...prev, v], [] as string[])
+    .option('--no-launch-files', t.noLaunchFiles)
     .option('--no-color', t.noColor)
     .addOption(langOption())
     .helpOption('-h, --help', t.help)
@@ -102,7 +110,13 @@ export function buildProgram(io: ProgramIO = defaultIO, lang: Lang = detectLang(
       const opts = ScanCliOptions.parse(raw);
       const outLang = opts.lang ?? (program.opts().lang as Lang | undefined) ?? lang;
       const result = localizeResult(
-        await scan({ root: dir, agents: AGENT_MAP[opts.agent], includeGlobal: opts.includeGlobal }),
+        await scan({
+          root: dir,
+          agents: AGENT_MAP[opts.agent],
+          includeGlobal: opts.includeGlobal,
+          launch: opts.launch,
+          launchFiles: opts.launchFiles,
+        }),
         outLang,
       );
       if (opts.format === 'json') {

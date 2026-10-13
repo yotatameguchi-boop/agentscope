@@ -52,6 +52,9 @@ interface Labels {
   hRecs: string;
   hUnparsed: string;
   paren: (s: string) => string;
+  hLaunch: string;
+  noLaunch: string;
+  launchSummary: (n: number) => string;
   ruleStatus: Record<Exclude<EffectStatus, 'active'>, string>;
   effect2: string;
   originally: (level: string) => string;
@@ -59,7 +62,7 @@ interface Labels {
 
 const LABELS: Record<Lang, Labels> = {
   ja: {
-    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体', managed: '組織の管理設定' },
+    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体', managed: '組織の管理設定', cli: '起動オプション' },
     status: { parsed: '解析済み', 'parse-error': '解析エラー', skipped: 'スキップ', unsupported: '未対応' },
     effect: { allow: '許可', ask: '要承認', deny: '禁止', 'guidance-allow': '許可寄りヒント', 'guidance-block': '拒否寄りヒント' },
     approval: { approved: '承認済み', rejected: '拒否', 'not-required': '承認不要', unknown: '不明' },
@@ -94,12 +97,15 @@ const LABELS: Record<Lang, Labels> = {
     hRecs: '推奨される対応',
     hUnparsed: '解析できなかった項目',
     paren: (s) => `（${s}）`,
+    hLaunch: '起動コマンド（起動時のオプション）',
+    noLaunch: '起動コマンドは見つかりませんでした。--launch で直接指定することもできます。',
+    launchSummary: (n) => `起動コマンド: ${n}`,
     ruleStatus: { ignored: '無効', overridden: '打ち消し' },
     effect2: '有効性',
     originally: (l) => `（本来は ${l}）`,
   },
   en: {
-    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide', managed: 'organization-managed' },
+    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide', managed: 'organization-managed', cli: 'launch option' },
     status: { parsed: 'parsed', 'parse-error': 'parse error', skipped: 'skipped', unsupported: 'unsupported' },
     effect: { allow: 'allow', ask: 'ask', deny: 'deny', 'guidance-allow': 'hint: allow', 'guidance-block': 'hint: block' },
     approval: { approved: 'approved', rejected: 'rejected', 'not-required': 'not required', unknown: 'unknown' },
@@ -134,6 +140,9 @@ const LABELS: Record<Lang, Labels> = {
     hRecs: 'Recommendations',
     hUnparsed: 'Items not analyzed',
     paren: (s) => ` (${s})`,
+    hLaunch: 'Launch commands (launch options)',
+    noLaunch: 'No launch commands were found. You can also pass one with --launch.',
+    launchSummary: (n) => `Launch commands: ${n}`,
     ruleStatus: { ignored: 'not applied', overridden: 'neutralized' },
     effect2: 'Effect',
     originally: (l) => ` (originally ${l})`,
@@ -162,7 +171,7 @@ export function renderTerminal(input: LocalizedScanResult, opts: TerminalOptions
   lines.push(`${L.agents}: ${result.agents.map(agentLabel).join(', ')}${result.includeGlobal ? L.includesGlobal : ''}`);
   const f = result.summary.findings;
   lines.push(
-    `${L.summary(result.summary.files, result.summary.rules, result.summary.mcpServers)}  ` +
+    `${L.summary(result.summary.files, result.summary.rules, result.summary.mcpServers)}  ${L.launchSummary(result.summary.launches)}  ` +
       `${L.findings}: ${levelColor.HIGH(`HIGH ${f.HIGH}`)} / ${levelColor.MEDIUM(`MEDIUM ${f.MEDIUM}`)} / ${levelColor.LOW(`LOW ${f.LOW}`)} / ${levelColor.INFO(`INFO ${f.INFO}`)}`,
   );
 
@@ -202,7 +211,7 @@ export function renderTerminal(input: LocalizedScanResult, opts: TerminalOptions
     h(L.hSettings);
     for (const s of result.settings) {
       const tag = s.status === 'active' ? '' : ` ${c.yellow(`[${L.ruleStatus[s.status]}]`)}`;
-      lines.push(`  [${agentLabel(s.agent)}] ${s.key} = ${s.value}${tag}  ${c.dim(s.source.file)}`);
+      lines.push(`  [${agentLabel(s.agent)}] ${s.key} = ${s.value}${tag}  ${c.dim(`${s.source.file} ${s.source.pointer}`)}`);
       if (s.statusNote) lines.push(c.dim(`      * ${s.statusNote}`));
     }
   }
@@ -218,6 +227,14 @@ export function renderTerminal(input: LocalizedScanResult, opts: TerminalOptions
     lines.push(`      ${L.approvalLabel}: ${L.approval[s.approval]}${s.approvalNote ? c.dim(L.paren(s.approvalNote)) : ''}`);
     lines.push(`      ${L.toolPerms}`);
     lines.push(c.dim(`      ${L.defined}: ${s.source.file} ${s.source.pointer}`));
+  }
+
+  // ---- 起動コマンド
+  h(L.hLaunch);
+  if (result.launches.length === 0) lines.push(`  ${L.noLaunch}`);
+  for (const l of result.launches) {
+    const opts = l.options.map((o) => (o.value === undefined ? o.flag : `${o.flag} ${o.value}`)).join(' ');
+    lines.push(`  [${agentLabel(l.agent)}] ${c.bold(l.executable)}${opts ? ` ${opts}` : ''}  ${c.dim(`${l.source.file} ${l.source.pointer}`)}`);
   }
 
   // ---- 検出結果

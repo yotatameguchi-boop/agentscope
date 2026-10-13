@@ -28,7 +28,8 @@ function applyManagedOnly(rules: PermissionRule[], settings: PermissionSetting[]
   );
   if (!lock) return;
   for (const r of rules) {
-    if (r.agent === 'claude-code' && r.scope !== 'managed' && r.status === 'active') {
+    // 起動オプションのルールに効くかは公式の記載がないため、判定しない（打ち消しを推測しない）
+    if (r.agent === 'claude-code' && r.scope !== 'managed' && r.scope !== 'cli' && r.status === 'active') {
       r.status = 'ignored';
       r.statusNote = tx(
         `管理設定（${lock.source.file}）の allowManagedPermissionRulesOnly により、管理設定以外の権限ルールは使われません`,
@@ -77,11 +78,13 @@ function normalizeSpec(spec: string | undefined): string | undefined {
 
 function applyRuleShadowing(rules: PermissionRule[]): void {
   const blockers = rules.filter((r) => r.status === 'active' && (r.effect === 'deny' || r.effect === 'ask'));
+  // 設定ファイルの deny / ask はすべての起動に効く。起動オプションの deny は、同じ起動のルールにだけ効く
+  const applies = (b: PermissionRule, r: PermissionRule) => b.scope !== 'cli' || (r.scope === 'cli' && b.launchId === r.launchId);
   for (const r of rules) {
     if (r.status !== 'active' || r.effect !== 'allow') continue;
     // deny が ask より先に評価される
-    const deny = blockers.find((b) => b.effect === 'deny' && covers(b, r));
-    const ask = deny ? undefined : blockers.find((b) => b.effect === 'ask' && covers(b, r));
+    const deny = blockers.find((b) => b.effect === 'deny' && applies(b, r) && covers(b, r));
+    const ask = deny ? undefined : blockers.find((b) => b.effect === 'ask' && applies(b, r) && covers(b, r));
     const by = deny ?? ask;
     if (!by) continue;
     r.status = 'overridden';
@@ -115,7 +118,8 @@ function cannotSetFromScope(s: PermissionSetting): boolean {
 function applyScalarPrecedence(settings: PermissionSetting[]): void {
   const byKey = new Map<string, PermissionSetting[]>();
   for (const s of settings) {
-    if (s.status !== 'active' || !SCALAR_KEYS.has(s.key) || cannotSetFromScope(s)) continue;
+    // 起動オプションはその起動に限って効くため、設定ファイルの値を上書きしたとは扱わない
+    if (s.status !== 'active' || !SCALAR_KEYS.has(s.key) || cannotSetFromScope(s) || s.scope === 'cli') continue;
     byKey.set(`${s.agent}:${s.key}`, [...(byKey.get(`${s.agent}:${s.key}`) ?? []), s]);
   }
   for (const group of byKey.values()) {
@@ -141,7 +145,18 @@ function overriddenBy(winner: PermissionSetting): Text {
 /** disableBypassPermissionsMode / disableAutoMode が "disable" なら、そのモードは使えない */
 function applyModeLocks(settings: PermissionSetting[]): void {
   const lock = (key: string) =>
-    settings.find((s) => s.agent === 'claude-code' && s.status === 'active' && (s.key === `permissions.${key}` || s.key === key) && s.value === 'disable');
+    settings.find(
+      (s) => s.agent === 'claude-code' && s.status === 'active' && s.scope !== 'cli' && (s.key === `permissions.${key}` || s.key === key) && s.value === 'disable',
+    );
+  // --restricted で起動すると、その起動では bypassPermissions が使えない
+  for (const r of settings.filter((s) => s.scope === 'cli' && s.key === 'restricted' && s.status === 'active')) {
+    for (const s of settings) {
+      if (s.launchId === r.launchId && s.key === 'permissions.defaultMode' && s.value === 'bypassPermissions' && s.status === 'active') {
+        s.status = 'ignored';
+        s.statusNote = tx('同じ起動コマンドの --restricted により bypassPermissions は使えません', 'bypassPermissions is refused because the same launch uses --restricted');
+      }
+    }
+  }
   const locks: Array<[string, PermissionSetting | undefined]> = [
     ['bypassPermissions', lock('disableBypassPermissionsMode')],
     ['auto', lock('disableAutoMode')],

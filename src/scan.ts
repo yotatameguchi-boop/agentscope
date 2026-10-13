@@ -13,9 +13,12 @@ import {
 } from './parsers/claude.js';
 import type { ParseContext } from './parsers/common.js';
 import { parseCursorCli, parseCursorMcpJson, parseCursorPermissions } from './parsers/cursor.js';
+import { collectLaunchTexts } from './launch/sources.js';
+import { parseLaunch } from './launch/parse.js';
+import { splitCommands } from './launch/tokenize.js';
 import { applyPrecedence, effectiveEnableAll } from './precedence.js';
 import { runRules } from './rules/index.js';
-import type { AgentId, ConfigFile, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
+import type { AgentId, ConfigFile, LaunchCommand, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
 import { parseJsonc } from './util/jsonc.js';
 import { safeReadFile } from './util/safeRead.js';
 import { VERSION } from './version.js';
@@ -31,13 +34,19 @@ export interface ScanOptions {
   home?: string;
   /** Claude Code の管理設定ディレクトリ（テスト用に差し替え可能。既定は OS ごとの場所） */
   managedDir?: string;
+  /** 起動コマンド（例: "claude --permission-mode bypassPermissions"）。実行はせず、文字列として解析する */
+  launch?: string[];
+  /** package.json の scripts などから起動コマンドを探す（既定: true）。includeGlobal 時はシェルの設定ファイルも見る */
+  launchFiles?: boolean;
 }
 
 export const DISCLAIMER = tx(
-  'この結果は設定ファイルに書かれた内容の静的解析です。実際に行使できる権限は、エージェントのバージョン、組織の管理設定、' +
-    '起動時のオプション、IDE 側の設定、MCP サーバーの実装によって変わります。検出がないことは安全を保証しません。',
-  'This is a static analysis of what is written in configuration files. The permissions that can actually be exercised depend on ' +
-    'the agent version, organization-managed settings, launch options, IDE settings, and MCP server implementations. ' +
+  'この結果は設定ファイルと起動コマンドに書かれた内容の静的解析です。実際に行使できる権限は、エージェントのバージョン、組織の管理設定、' +
+    '実際に使われた起動オプション（ここで見つからなかったものを含む）、環境変数、IDE 側の設定、MCP サーバーの実装によって変わります。' +
+    '検出がないことは安全を保証しません。',
+  'This is a static analysis of what is written in configuration files and launch commands. The permissions that can actually be exercised depend on ' +
+    'the agent version, organization-managed settings, the launch options actually used (including ones not found here), environment variables, ' +
+    'IDE settings, and MCP server implementations. ' +
     'Having no findings does not mean the setup is safe.',
 );
 
@@ -122,6 +131,29 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     .flatMap((p) => p.unparsed)
     .sort((a, b) => (fileOrder.get(a.file) ?? 0) - (fileOrder.get(b.file) ?? 0) || a.pointer.localeCompare(b.pointer, 'en', { numeric: true }));
   const secretHits = parsed.flatMap((p) => p.secretHits);
+
+  // 起動コマンド（起動時のオプション）
+  const launches: LaunchCommand[] = [];
+  const texts = await collectLaunchTexts({
+    root,
+    home,
+    explicit: opts.launch ?? [],
+    projectFiles: opts.launchFiles ?? true,
+    shellFiles: (opts.launchFiles ?? true) && includeGlobal,
+  });
+  for (const t of texts) {
+    for (const [k, words] of splitCommands(t.text).entries()) {
+      const lp = await parseLaunch(words, { root, source: { file: t.file, pointer: t.pointer }, launchId: `${t.file}#${t.pointer}#${k}` });
+      if (!lp || !agents.includes(lp.launch.agent)) continue;
+      launches.push(lp.launch);
+      rules.push(...lp.rules);
+      settings.push(...lp.settings);
+      mcpServers.push(...lp.mcpServers);
+      unparsed.push(...lp.unparsed);
+      secretHits.push(...lp.secretHits);
+    }
+  }
+
   applyPrecedence(rules, settings);
   resolveClaudeMcpApproval(mcpServers, approvalHints, effectiveEnableAll(settings) ?? null);
 
@@ -138,9 +170,10 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     rules,
     settings,
     mcpServers,
+    launches,
     findings,
     unparsed,
-    summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, findings: counts },
+    summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, launches: launches.length, findings: counts },
     disclaimer: DISCLAIMER,
   };
 }

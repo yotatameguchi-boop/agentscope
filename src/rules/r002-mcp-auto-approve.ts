@@ -99,6 +99,20 @@ export const r002: SecurityRule = {
     }
 
     for (const s of ctx.settings) {
+      if (s.agent === 'cursor' && s.scope === 'cli' && s.key === 'approveMcps' && s.value === 'true') {
+        out.push(finding(rule, {
+          level: 'MEDIUM',
+          agent: s.agent,
+          reason: tx(
+            '起動オプション --approve-mcps により、すべての MCP サーバーが確認なしで承認されます',
+            'The --approve-mcps launch option approves every MCP server without confirmation',
+          ),
+          file: s.source.file,
+          pointer: s.source.pointer,
+          evidence: '--approve-mcps',
+          recommendation: tx('--approve-mcps を外し、使うサーバーを個別に承認してください。', 'Remove --approve-mcps and approve the servers you use one by one.'),
+        }));
+      }
       if (s.agent === 'claude-code' && s.key === 'enableAllProjectMcpServers' && s.value === 'true') {
         out.push(finding(rule, {
           level: 'MEDIUM',

@@ -41,6 +41,7 @@ agentscope scan --agent claude     # Claude Code の設定だけ
 agentscope scan --agent cursor     # Cursor の設定だけ
 agentscope scan --format json      # JSON で出力
 agentscope scan --include-global   # ユーザー単位の設定も分析
+agentscope scan --launch "claude -p --dangerously-skip-permissions"   # 起動コマンドも分析（実行はしない）
 agentscope --help
 ```
 
@@ -51,6 +52,8 @@ agentscope --help
 | `-g, --include-global` | ホームディレクトリのユーザー設定も読む | 読まない |
 | `--no-color` | 色を付けない（`NO_COLOR` 環境変数でも無効化） | TTY のとき色付き |
 | `--lang <ja\|en>` | 表示言語（レポート・JSON・ヘルプ） | 環境から判定 |
+| `--launch <command>` | 起動時のオプションを分析する起動コマンド。文字列として解析し、実行はしない。複数指定可 | なし |
+| `--no-launch-files` | プロジェクト内のファイルから起動コマンドを探さない（[起動時のオプション](#起動時のオプション)を参照） | 探す |
 
 表示言語は `--lang` を最優先し、次に環境変数 `AGENTSCOPE_LANG`、`LC_ALL` / `LC_MESSAGES` / `LANG` の順で判定します。日本語のロケールなら日本語、それ以外は英語です。
 
@@ -63,7 +66,7 @@ agentscope --help
 ```text
 AgentScope Security Report (v0.1.0)
 対象エージェント: Claude Code, Cursor
-設定ファイル: 6  権限ルール: 29  MCPサーバー: 4  検出: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
+設定ファイル: 6  権限ルール: 29  MCPサーバー: 4  起動コマンド: 0  検出: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
 
 ■ 検出されたリスク
   [HIGH] R001 広範囲のコマンド実行を自動承認する設定  (Claude Code)
@@ -99,6 +102,33 @@ AgentScope Security Report (v0.1.0)
 | Claude Code | `managed-settings.json`、`managed-settings.d/*.json`、`managed-mcp.json` | 組織の管理設定 | `-g` | `/Library/Application Support/ClaudeCode/`（macOS）、`/etc/claude-code/`（Linux / WSL）、`C:\Program Files\ClaudeCode\`（Windows）。最優先 |
 
 JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
+
+### 起動時のオプション
+
+`claude --dangerously-skip-permissions` や `agent --force` のような起動オプションは、その起動に限って権限を変えます。AgentScope は起動コマンドを文字列として読み（実行はしません）、次の場所から探します。
+
+| 場所 | 対象になる条件 |
+| --- | --- |
+| `--launch "<コマンド>"` | 常に |
+| `package.json` の `scripts` | 既定（`--no-launch-files` で無効） |
+| `.vscode/tasks.json`、`.devcontainer/devcontainer.json` / `.devcontainer.json` のライフサイクルコマンド | 既定 |
+| `Makefile`、`justfile` | 既定 |
+| `.github/workflows/*.yml` の `run:` 行と、`anthropics/claude-code-action` の `claude_args:` 入力 | 既定 |
+| `~/.zshrc`、`~/.bashrc`、`~/.bash_profile`、`~/.profile`、`~/.zprofile`、`~/.config/fish/config.fish`（alias とコマンド） | `-g` 指定時 |
+
+認識する起動は `claude`、`npx @anthropic-ai/claude-code`、`agent`、`cursor-agent` です。`env`・`exec`・`timeout` や、先頭の `VAR=値` の代入を挟んでいても認識します。
+
+| エージェント | 解析するオプション |
+| --- | --- |
+| Claude Code | `--permission-mode`、`--dangerously-skip-permissions`、`--allow-dangerously-skip-permissions`、`--allowedTools`、`--disallowedTools`、`--add-dir`、`--settings`（インライン JSON か対象ディレクトリ内のファイル）、`--mcp-config`（同）、`--tools`、`--setting-sources`、`--strict-mcp-config`、`--bare`、`--safe-mode`、`--restricted` |
+| Cursor（`agent`） | `--force` / `--yolo`、`--approve-mcps`、`--sandbox`、`--trust`、`--api-key`（値は表示しない） |
+
+起動オプションは `cli` という独立したスコープとして扱います。
+
+- その起動に限って効くため、設定ファイルの値を上書きしたとは扱いません
+- 設定ファイルの deny / ask は `--allowedTools` も打ち消します。`--disallowedTools` が打ち消すのは同じ起動のルールだけです
+- 設定ファイルの `disableBypassPermissionsMode: "disable"` や、同じ起動の `--restricted` があれば、`--dangerously-skip-permissions` は効かないと判定します
+- 起動コマンド中の秘密情報（`ANTHROPIC_API_KEY=...`、`--api-key ...`）は R004 で検出し、値は表示しません
 
 ### 権限モデルの違いの扱い
 
@@ -156,7 +186,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 
 - **設定に書かれた権限と、実際に行使できる権限は一致しません。** 次の要素は分析していません
   - 組織の管理設定（Claude Code の managed settings、Cursor のチーム管理者設定）
-  - 起動時のオプション（`--permission-mode`、`--allowedTools` など）
+  - 上記の場所に書かれていない起動オプション（ターミナルで直接入力したものなど）。`--launch` で渡せば分析できます。動作を変える環境変数
   - Cursor の IDE 設定（Run Mode、設定画面で登録した許可リスト）
   - MCP サーバーが実際に提供するツールと、その操作範囲
   - プラグイン、フック、`apiKeyHelper` などのコマンドの中身
@@ -182,9 +212,10 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
   "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, "status": "active", ... }],
   "settings": [{ "key": "permissions.defaultMode", "value": "bypassPermissions", ... }],
   "mcpServers": [{ "name": "github", "transport": "stdio", "commandName": "npx", "envNames": ["GITHUB_TOKEN"], "approval": "approved", "toolPermissions": "unknown", ... }],
+  "launches": [{ "agent": "claude-code", "executable": "claude", "source": { "file": "package.json", "pointer": "scripts.ai" }, "options": [{ "flag": "--dangerously-skip-permissions" }], ... }],
   "findings": [{ "ruleId": "R001", "level": "HIGH", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "...", "originalLevel": "HIGH (only when lowered)", "effectNote": "..." }],
   "unparsed": [{ "file": ".claude/settings.json", "pointer": "hooks", "reason": "..." }],
-  "summary": { "files": 3, "rules": 12, "mcpServers": 3, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
+  "summary": { "files": 3, "rules": 12, "mcpServers": 3, "launches": 1, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
   "disclaimer": "..."
 }
 ```

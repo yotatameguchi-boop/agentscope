@@ -19,10 +19,11 @@ export type ConfigScope =
   | 'project' // リポジトリで共有される設定（.claude/settings.json, .mcp.json, .cursor/*）
   | 'project-local' // 個人のプロジェクト設定（.claude/settings.local.json, ~/.claude.json の projects[...]）
   | 'user' // ユーザー全体の設定（~/.claude/settings.json, ~/.cursor/*）
-  | 'managed'; // 組織の管理設定（managed-settings.json など）。最優先で、利用者は上書きできない
+  | 'managed' // 組織の管理設定（managed-settings.json など）。最優先で、利用者は上書きできない
+  | 'cli'; // 起動時のオプション（claude --permission-mode など）。その起動に限って効く
 
 /** 設定の優先順位（小さいほど優先）。Claude Code: managed > local > project > user */
-export const SCOPE_PRECEDENCE: Record<ConfigScope, number> = { managed: 0, 'project-local': 1, project: 2, user: 3 };
+export const SCOPE_PRECEDENCE: Record<ConfigScope, number> = { managed: 0, cli: 1, 'project-local': 2, project: 3, user: 4 };
 
 /**
  * ルール・設定が実際に効くかどうか。
@@ -104,6 +105,8 @@ export interface PermissionRule {
   status: EffectStatus;
   /** status が active 以外のときの理由 */
   statusNote?: Text;
+  /** 起動オプション由来のとき、どの起動コマンドか（LaunchCommand.launchId） */
+  launchId?: string;
 }
 
 /** 権限ルール以外の、権限に関わる設定値 */
@@ -116,6 +119,19 @@ export interface PermissionSetting {
   source: SourceRef;
   status: EffectStatus;
   statusNote?: Text;
+  launchId?: string;
+}
+
+/** 見つかった起動コマンド。権限に関わるオプションだけを、表示しても安全な形で持つ */
+export interface LaunchCommand {
+  agent: AgentId;
+  /** 実行ファイル名（claude / agent / cursor-agent） */
+  executable: string;
+  /** どこに書かれていたか（package.json の scripts.dev、--launch など） */
+  source: SourceRef;
+  launchId: string;
+  /** 認識したオプション。値は種類が決まっているもの（モード名など）や件数だけを入れる */
+  options: Array<{ flag: string; value?: string }>;
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
@@ -207,12 +223,14 @@ export interface ScanResult {
   rules: PermissionRule[];
   settings: PermissionSetting[];
   mcpServers: McpServer[];
+  launches: LaunchCommand[];
   findings: Finding[];
   unparsed: UnparsedItem[];
   summary: {
     files: number;
     rules: number;
     mcpServers: number;
+    launches: number;
     findings: Record<RiskLevel, number>;
   };
   disclaimer: Text;

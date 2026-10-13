@@ -42,6 +42,7 @@ agentscope scan --agent cursor     # Cursor settings only
 agentscope scan --format json      # JSON output
 agentscope scan --include-global   # also analyze user-level settings
 agentscope scan --lang en          # English output
+agentscope scan --launch "claude -p --dangerously-skip-permissions"   # also analyze a launch command (never executed)
 agentscope --help
 ```
 
@@ -52,6 +53,8 @@ agentscope --help
 | `-g, --include-global` | Also read user-level settings in the home directory | off |
 | `--no-color` | Disable colors (`NO_COLOR` also works) | colored on a TTY |
 | `--lang <ja\|en>` | Language of the report, JSON, and help | detected |
+| `--launch <command>` | A launch command to analyze for launch options. It is parsed as a string and never executed. Repeatable | none |
+| `--no-launch-files` | Do not look for launch commands in project files (see [Launch options](#launch-options)) | look |
 
 The output language is chosen from `--lang`, then `AGENTSCOPE_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`. A Japanese locale selects Japanese; anything else selects English.
 
@@ -64,7 +67,7 @@ An excerpt from analyzing `test/fixtures/risky-project` (dummy settings used by 
 ```text
 AgentScope Security Report (v0.1.0)
 Agents: Claude Code, Cursor
-Config files: 6  Permission rules: 29  MCP servers: 4  Findings: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
+Config files: 6  Permission rules: 29  MCP servers: 4  Launch commands: 0  Findings: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
 
 ■ Security findings
   [HIGH] R001 Broad command execution is auto-approved  (Claude Code)
@@ -100,6 +103,33 @@ Missing files are skipped without error. AgentScope does not walk directories; i
 | Claude Code | `managed-settings.json`, `managed-settings.d/*.json`, `managed-mcp.json` | organization-managed | `-g` | in `/Library/Application Support/ClaudeCode/` (macOS), `/etc/claude-code/` (Linux / WSL), `C:\Program Files\ClaudeCode\` (Windows). Highest precedence |
 
 Both JSON and JSONC (comments, trailing commas) are supported.
+
+### Launch options
+
+Launch options such as `claude --dangerously-skip-permissions` or `agent --force` change permissions for that run only. AgentScope reads launch commands as text (it never runs them) from:
+
+| Where | When |
+| --- | --- |
+| `--launch "<command>"` | always |
+| `package.json` `scripts` | by default (`--no-launch-files` turns this off) |
+| `.vscode/tasks.json`, `.devcontainer/devcontainer.json` / `.devcontainer.json` lifecycle commands | by default |
+| `Makefile`, `justfile` | by default |
+| `.github/workflows/*.yml` `run:` lines and the `claude_args:` input of `anthropics/claude-code-action` | by default |
+| `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, `~/.zprofile`, `~/.config/fish/config.fish` (aliases and commands) | with `-g` |
+
+Recognized invocations are `claude`, `npx @anthropic-ai/claude-code`, `agent`, and `cursor-agent`, also behind `env`, `exec`, `timeout`, and leading `VAR=value` assignments.
+
+| Agent | Options analyzed |
+| --- | --- |
+| Claude Code | `--permission-mode`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--allowedTools`, `--disallowedTools`, `--add-dir`, `--settings` (inline JSON or a file inside the target directory), `--mcp-config` (same), `--tools`, `--setting-sources`, `--strict-mcp-config`, `--bare`, `--safe-mode`, `--restricted` |
+| Cursor (`agent`) | `--force` / `--yolo`, `--approve-mcps`, `--sandbox`, `--trust`, `--api-key` (value never shown) |
+
+Launch options are treated as a separate scope, `cli`:
+
+- They apply only to that launch, so they never mark values in settings files as overridden
+- Deny and ask rules in settings files still neutralize `--allowedTools`; `--disallowedTools` neutralizes only rules of the same launch
+- `disableBypassPermissionsMode: "disable"` in settings, or `--restricted` in the same launch, makes `--dangerously-skip-permissions` ineffective
+- Secrets in launch commands (`ANTHROPIC_API_KEY=...`, `--api-key ...`) are reported by R004 and never printed
 
 ### How the two permission models are handled
 
@@ -157,7 +187,7 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 
 - **Permissions written in configuration files are not the same as the permissions that can actually be exercised.** The following are not analyzed:
   - Organization-managed settings (Claude Code managed settings, Cursor team admin settings)
-  - Launch options (`--permission-mode`, `--allowedTools`, etc.)
+  - Launch options that are not found in the locations above (for example typed directly in a terminal) unless you pass them with `--launch`; environment variables that change behavior
   - Cursor IDE settings (Run Mode, allowlists registered in the settings UI)
   - The tools MCP servers actually provide, and what they can reach
   - The contents of plugins, hooks, `apiKeyHelper`, and other commands
@@ -183,9 +213,10 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
   "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, "status": "active", ... }],
   "settings": [{ "key": "permissions.defaultMode", "value": "bypassPermissions", ... }],
   "mcpServers": [{ "name": "github", "transport": "stdio", "commandName": "npx", "envNames": ["GITHUB_TOKEN"], "approval": "approved", "toolPermissions": "unknown", ... }],
+  "launches": [{ "agent": "claude-code", "executable": "claude", "source": { "file": "package.json", "pointer": "scripts.ai" }, "options": [{ "flag": "--dangerously-skip-permissions" }], ... }],
   "findings": [{ "ruleId": "R001", "level": "HIGH", "title": "...", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "...", "originalLevel": "HIGH (only when lowered)", "effectNote": "..." }],
   "unparsed": [{ "file": ".claude/settings.json", "pointer": "hooks", "reason": "..." }],
-  "summary": { "files": 3, "rules": 12, "mcpServers": 3, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
+  "summary": { "files": 3, "rules": 12, "mcpServers": 3, "launches": 1, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
   "disclaimer": "..."
 }
 ```
