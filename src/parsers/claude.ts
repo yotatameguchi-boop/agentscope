@@ -1,7 +1,8 @@
 import path from 'node:path';
-import type { McpServer, McpTransport, ParsedConfig, PermissionRule, RuleCategory, RuleEffect } from '../types.js';
-import { isPlainObject, joinPointer } from '../util/jsonc.js';
-import { redactIfSecret, scanForSecrets } from '../util/secrets.js';
+import type { ConfigScope, McpServer, McpTransport, ParsedConfig, PermissionRule, PermissionSetting, RuleCategory, RuleEffect } from '../types.js';
+import { isPlainObject } from '../util/jsonc.js';
+import { joinPointer } from '../util/pointer.js';
+import { redactIfSecret, redactName, scanForSecrets } from '../util/secrets.js';
 import { tx, type Text } from '../i18n.js';
 import { emptyParsed, MSG, parseMcpServers, stringArray, unparsed, type ParseContext } from './common.js';
 
@@ -53,6 +54,42 @@ export function splitClaudeRule(raw: string): { tool: string; specifier?: string
   return { tool: s.slice(0, open).trim(), specifier: s.slice(open + 1, -1) };
 }
 
+/** 主たる入力（コマンド・パス・URL）を引数名で指定するルールは Claude Code に無視される */
+const PRIMARY_FIELDS: Record<string, string> = {
+  Bash: 'command', PowerShell: 'command', Read: 'file_path', Edit: 'file_path', Write: 'file_path', Grep: 'path', Glob: 'path',
+  NotebookEdit: 'notebook_path', WebFetch: 'url',
+};
+
+/**
+ * Claude Code が読み込まない（効果のない）ルールかどうか。公式ドキュメントの記載に基づく。
+ * https://code.claude.com/docs/en/permissions
+ */
+export function ignoredReason(tool: string, specifier: string | undefined, effect: RuleEffect): Text | undefined {
+  if (tool.startsWith('mcp__') && specifier !== undefined) {
+    return tx('Claude Code は括弧付きの mcp__ ルールを設定ファイルから読み込まず、無視します', 'Claude Code skips mcp__ rules with parentheses when loading settings files');
+  }
+  if (effect === 'allow' && tool.includes('*') && !/^mcp__[^*]+__/.test(tool)) {
+    return tx(
+      'ツール名にワイルドカードを含む allow ルールは、「mcp__<server>__」で始まる場合を除き Claude Code に無視されます',
+      'Claude Code skips allow rules with a wildcard in the tool name unless they start with "mcp__<server>__"',
+    );
+  }
+  if ((tool === 'Write' || tool === 'MultiEdit' || tool === 'NotebookEdit' || tool === 'Glob') && specifier) {
+    return tx(
+      `パス指定付きの ${tool} ルールはファイル権限の判定に使われません（Edit / Read を使います）`,
+      `${tool} rules with a path are not used for file permission checks (Edit / Read are used instead)`,
+    );
+  }
+  const field = PRIMARY_FIELDS[tool];
+  if (field && specifier !== undefined && specifier.trim().startsWith(`${field}:`)) {
+    return tx(
+      `「${field}:」で主たる入力を指定するルールは、複合コマンドで回避できるため Claude Code に無視されます`,
+      `Claude Code ignores rules that match the primary input with "${field}:", because compound commands could bypass them`,
+    );
+  }
+  return undefined;
+}
+
 function parseRuleList(ctx: ParseContext, list: unknown, pointer: string, effect: RuleEffect, out: ParsedConfig) {
   for (const item of stringArray(ctx, list, pointer, out)) {
     const split = splitClaudeRule(item.value);
@@ -65,22 +102,19 @@ function parseRuleList(ctx: ParseContext, list: unknown, pointer: string, effect
       scope: ctx.scope,
       effect,
       category: categorizeClaudeTool(split.tool),
-      tool: split.tool,
+      tool: redactName(split.tool),
       // 秘密情報を含むルール（例: Bash(curl -H "Authorization: Bearer ...")）は伏せて保持する
       specifier: split.specifier === undefined ? undefined : redactIfSecret(split.specifier),
       raw: redactIfSecret(item.value),
       nativeKind: `claude.permissions.${effect}`,
       source: { file: ctx.file, pointer: item.pointer },
+      status: 'active',
     };
     if (rule.category === 'unknown') rule.note = tx('AgentScope が知らないツール名です。権限の範囲は判断していません', 'Tool name not known to AgentScope; its scope was not assessed');
-    if (split.tool.startsWith('mcp__') && split.specifier !== undefined) {
-      rule.note = tx('Claude Code は括弧付きの mcp__ ルールを設定ファイルから読み込まず、無視します', 'Claude Code skips mcp__ rules with parentheses when loading settings files');
-    }
-    if ((split.tool === 'Write' || split.tool === 'MultiEdit' || split.tool === 'NotebookEdit' || split.tool === 'Glob') && split.specifier) {
-      rule.note = tx(
-        `パス指定付きの ${split.tool} ルールはファイル権限の判定に使われません（Edit / Read を使います）`,
-        `${split.tool} rules with a path are not used for file permission checks (Edit / Read are used instead)`,
-      );
+    const ignored = ignoredReason(split.tool, split.specifier, effect);
+    if (ignored) {
+      rule.status = 'ignored';
+      rule.statusNote = ignored;
     }
     out.rules.push(rule);
   }
@@ -114,14 +148,52 @@ const UNANALYZED_SECURITY_KEYS: Record<string, Text> = {
   ),
 };
 
+/** Claude Code が自動で実行するコマンドを指定するキー（I003 の材料。コマンドの中身は表示しない） */
+export const AUTO_EXEC_KEYS = new Set(['hooks', 'statusLine', 'fileSuggestion', 'awsAuthRefresh', 'awsCredentialExport', 'otelHeadersHelper', 'apiKeyHelper']);
+
+/** フックに登録されたコマンドの数を数える。{ Event: [{ matcher, hooks: [{ type, command }] }] } */
+function countHookCommands(v: unknown): number {
+  if (!isPlainObject(v)) return 0;
+  let n = 0;
+  for (const groups of Object.values(v)) {
+    if (!Array.isArray(groups)) continue;
+    for (const g of groups) if (isPlainObject(g) && Array.isArray(g.hooks)) n += g.hooks.length;
+  }
+  return n;
+}
+
+function describeAutoExec(key: string, value: unknown): Text {
+  if (key === 'hooks') {
+    const n = countHookCommands(value);
+    return tx(`${n} 件（コマンドは表示しません）`, `${n} hook(s) (commands not shown)`);
+  }
+  return tx('設定あり（コマンドは表示しません）', 'set (command not shown)');
+}
+
 const KNOWN_PERMISSION_KEYS = new Set([
   'allow', 'deny', 'ask', 'defaultMode', 'disableBypassPermissionsMode', 'disableAutoMode', 'additionalDirectories',
   'blockReadsOutsideWorkingDirectories',
 ]);
 
+/** 置ける場所が限られているキー。それ以外の場所に書いても効かない（settings reference の Scope 欄） */
+const SCOPE_RESTRICTED_KEYS: Record<string, ConfigScope[]> = {
+  skipDangerousModePermissionPrompt: ['user', 'project-local', 'managed'],
+  skipAutoPermissionPrompt: ['user', 'managed'],
+  'sandbox.filesystem.disabled': ['user', 'managed'],
+};
+
 function pushSetting(ctx: ParseContext, out: ParsedConfig, key: string, value: string | Text, pointer: string) {
   const shown = typeof value === 'string' ? redactIfSecret(value) : value;
-  out.settings.push({ agent: 'claude-code', scope: ctx.scope, key, value: shown, source: { file: ctx.file, pointer } });
+  const setting: PermissionSetting = { agent: 'claude-code', scope: ctx.scope, key, value: shown, source: { file: ctx.file, pointer }, status: 'active' };
+  const allowed = SCOPE_RESTRICTED_KEYS[key];
+  if (allowed && !allowed.includes(ctx.scope)) {
+    setting.status = 'ignored';
+    setting.statusNote = tx(
+      `${key} はこの場所（${ctx.file}）からは読み込まれません`,
+      `${key} is not read from this location (${ctx.file})`,
+    );
+  }
+  out.settings.push(setting);
 }
 
 function describeScalar(v: unknown): string | Text {
@@ -176,7 +248,7 @@ export function parseClaudeSettings(ctx: ParseContext, json: unknown): ClaudePar
         break;
       case 'env':
         if (isPlainObject(value)) {
-          const names = Object.keys(value).sort().join(', ');
+          const names = Object.keys(value).map(redactName).sort().join(', ');
           pushSetting(ctx, out, 'env', tx(`${names || '(なし)'}（値は表示しません）`, `${names || '(none)'} (values not shown)`), ptr);
         }
         else out.unparsed.push(unparsed(ctx, ptr, MSG.notObject));
@@ -186,6 +258,7 @@ export function parseClaudeSettings(ctx: ParseContext, json: unknown): ClaudePar
         break;
       default:
         if (IGNORED_SETTINGS_KEYS.has(key)) break;
+        if (AUTO_EXEC_KEYS.has(key)) pushSetting(ctx, out, key, describeAutoExec(key, value), ptr);
         if (key in UNANALYZED_SECURITY_KEYS) out.unparsed.push(unparsed(ctx, ptr, UNANALYZED_SECURITY_KEYS[key]!));
         else out.unparsed.push(unparsed(ctx, ptr, tx('AgentScope が知らない設定キーです（v0.1 では解析しません）', 'Setting key not known to AgentScope (not analyzed in v0.1)')));
     }
@@ -228,7 +301,17 @@ function parseSandbox(ctx: ParseContext, value: unknown, out: ParsedConfig) {
   if (isPlainObject(value.filesystem) && value.filesystem.disabled !== undefined) {
     pushSetting(ctx, out, 'sandbox.filesystem.disabled', describeScalar(value.filesystem.disabled), 'sandbox.filesystem.disabled');
   }
+  if (isPlainObject(value.network) && value.network.allowedDomains !== undefined) {
+    const domains = stringArray(ctx, value.network.allowedDomains, 'sandbox.network.allowedDomains', out);
+    for (const d of domains) pushSetting(ctx, out, 'sandbox.network.allowedDomains', d.value, d.pointer);
+  }
   for (const key of Object.keys(value)) {
+    if (key === 'network' && isPlainObject(value.network)) {
+      for (const k of Object.keys(value.network)) {
+        if (k !== 'allowedDomains') out.unparsed.push(unparsed(ctx, joinPointer('sandbox.network', k), tx('サンドボックスの詳細設定は v0.1 では解析しません', 'Detailed sandbox settings are not analyzed in v0.1')));
+      }
+      continue;
+    }
     if (!known.includes(key)) {
       out.unparsed.push(unparsed(ctx, joinPointer('sandbox', key), tx('サンドボックスの詳細設定は v0.1 では解析しません', 'Detailed sandbox settings are not analyzed in v0.1')));
     }
@@ -253,7 +336,9 @@ export function parseClaudeMcpJson(ctx: ParseContext, json: unknown): ClaudePars
   }
   out.secretHits.push(...scanForSecrets(json, 'claude-code', ctx.file));
   if (json.mcpServers === undefined) out.unparsed.push(unparsed(ctx, 'mcpServers', MSG.noMcpServers));
-  out.mcpServers.push(...parseMcpServers(ctx, json.mcpServers, 'mcpServers', out, inferClaudeTransport));
+  const servers = parseMcpServers(ctx, json.mcpServers, 'mcpServers', out, inferClaudeTransport);
+  // managed-mcp.json のサーバーは組織が配布したもので、利用者の承認対象ではない
+  out.mcpServers.push(...(ctx.scope === 'managed' ? markSelfAdded(servers, tx('組織の管理設定で配布されたサーバー', 'Deployed by organization-managed settings')) : servers));
   for (const key of Object.keys(json)) {
     if (key !== 'mcpServers') out.unparsed.push(unparsed(ctx, joinPointer('', key), MSG.unknownKey));
   }
@@ -314,10 +399,16 @@ export function projectKeyCandidates(root: string, realRoot: string): string[] {
 }
 
 /** .mcp.json 由来のサーバーに、設定ファイル群から分かる承認状態を付ける */
-export function resolveClaudeMcpApproval(servers: McpServer[], hints: ClaudeMcpApprovalHints[]): void {
+export function resolveClaudeMcpApproval(
+  servers: McpServer[],
+  hints: ClaudeMcpApprovalHints[],
+  /** 優先順位を解決済みの enableAllProjectMcpServers。null は「どこにも設定がない」 */
+  effectiveEnableAll?: { value: boolean; file: string } | null,
+): void {
   const enabled = hints.flatMap((h) => h.enabled);
   const disabled = hints.flatMap((h) => h.disabled);
-  const enableAll = hints.map((h) => h.enableAll).filter((x) => x !== undefined);
+  const enableAll =
+    effectiveEnableAll === undefined ? hints.map((h) => h.enableAll).filter((x) => x !== undefined) : effectiveEnableAll ? [effectiveEnableAll] : [];
   for (const s of servers) {
     if (s.agent !== 'claude-code' || s.approval === 'not-required') continue;
     const dis = disabled.find((d) => d.name === s.name);

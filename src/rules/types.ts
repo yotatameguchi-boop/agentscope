@@ -8,6 +8,8 @@ export interface RuleContext {
   settings: PermissionSetting[];
   mcpServers: McpServer[];
   secretHits: SecretHit[];
+  /** ホームディレクトリ（additionalDirectories がホーム全体かの判定に使う） */
+  home?: string;
 }
 
 /** 検査ルール。外部コントリビューターはこの形のオブジェクトを追加し、rules/index.ts に登録する */

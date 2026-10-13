@@ -1,7 +1,9 @@
 import path from 'node:path';
 import type { AgentId, ConfigScope, McpServer, McpTransport, ParsedConfig, UnparsedItem } from '../types.js';
 import { tx, type Text } from '../i18n.js';
-import { isPlainObject, joinPointer } from '../util/jsonc.js';
+import { isPlainObject } from '../util/jsonc.js';
+import { joinPointer } from '../util/pointer.js';
+import { redactName } from '../util/secrets.js';
 
 export interface ParseContext {
   agent: AgentId;
@@ -98,10 +100,10 @@ export function parseMcpServers(
     const server: McpServer = {
       agent: ctx.agent,
       scope: ctx.scope,
-      name,
+      name: redactName(name),
       transport: inferTransport(def),
-      envNames: isPlainObject(def.env) ? Object.keys(def.env).sort() : [],
-      headerNames: isPlainObject(def.headers) ? Object.keys(def.headers).sort() : [],
+      envNames: isPlainObject(def.env) ? Object.keys(def.env).map(redactName).sort() : [],
+      headerNames: isPlainObject(def.headers) ? Object.keys(def.headers).map(redactName).sort() : [],
       approval: 'unknown',
       source: { file: ctx.file, pointer: ptr },
       toolPermissions: 'unknown',

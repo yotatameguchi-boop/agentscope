@@ -1,5 +1,6 @@
 import type { McpTransport, ParsedConfig, PermissionRule, RuleEffect } from '../types.js';
-import { isPlainObject, joinPointer } from '../util/jsonc.js';
+import { isPlainObject } from '../util/jsonc.js';
+import { joinPointer } from '../util/pointer.js';
 import { redactIfSecret, scanForSecrets } from '../util/secrets.js';
 import { tx } from '../i18n.js';
 import { emptyParsed, MSG, parseMcpServers, stringArray, unparsed, type ParseContext } from './common.js';
@@ -127,8 +128,61 @@ export function parseCursorPermissions(ctx: ParseContext, json: unknown): Parsed
   return out;
 }
 
-function rule(ctx: ParseContext, r: Omit<PermissionRule, 'agent' | 'scope'>): PermissionRule {
+function rule(ctx: ParseContext, r: Omit<PermissionRule, 'agent' | 'scope' | 'status'>): PermissionRule {
   // 秘密情報を含む文字列は伏せて保持する
   const specifier = r.specifier === undefined ? undefined : redactIfSecret(r.specifier);
-  return { agent: 'cursor', scope: ctx.scope, ...r, specifier, raw: redactIfSecret(r.raw) };
+  return { agent: 'cursor', scope: ctx.scope, ...r, specifier, raw: redactIfSecret(r.raw), status: 'active' };
+}
+
+// ---- Cursor CLI（.cursor/cli.json, ~/.cursor/cli-config.json） -----------------
+
+const CLI_TOOLS: Record<string, PermissionRule['category']> = {
+  Shell: 'command',
+  Read: 'file-read',
+  Write: 'file-write',
+  WebFetch: 'network',
+  Mcp: 'mcp',
+};
+
+/**
+ * Cursor CLI の権限設定。permissions.allow / deny に Shell(cmd) / Read(glob) / Write(glob) / WebFetch(domain) / Mcp(server:tool) を書く。
+ * deny は allow より優先される。cli-config.json には CLI の他の設定も入るため、permissions 以外のキーは読み飛ばす。
+ * 仕様: https://cursor.com/docs/cli/reference/permissions
+ */
+export function parseCursorCli(ctx: ParseContext, json: unknown): ParsedConfig {
+  const out = emptyParsed();
+  if (!isPlainObject(json)) {
+    out.unparsed.push(unparsed(ctx, '', MSG.rootNotObject));
+    return out;
+  }
+  if (json.permissions === undefined) return out;
+  out.secretHits.push(...scanForSecrets(json.permissions, 'cursor', ctx.file, 'permissions'));
+  if (!isPlainObject(json.permissions)) {
+    out.unparsed.push(unparsed(ctx, 'permissions', MSG.notObject));
+    return out;
+  }
+  for (const effect of ['allow', 'deny'] as const) {
+    for (const item of stringArray(ctx, json.permissions[effect], `permissions.${effect}`, out)) {
+      const m = /^\s*([A-Za-z]+)\s*\((.*)\)\s*$/s.exec(item.value);
+      const category = m ? CLI_TOOLS[m[1]!] : undefined;
+      if (!m || !category) {
+        out.unparsed.push(unparsed(ctx, item.pointer, tx('Cursor CLI の権限トークンとして解釈できません', 'Cannot be interpreted as a Cursor CLI permission token')));
+        continue;
+      }
+      out.rules.push(rule(ctx, {
+        effect,
+        category,
+        tool: m[1]!,
+        specifier: m[2]!.trim(),
+        raw: item.value,
+        nativeKind: `cursor.cli.permissions.${effect}`,
+        source: { file: ctx.file, pointer: item.pointer },
+        note: m[1] === 'Shell' ? tx('コマンドの先頭部分（commandBase）で判定されます', 'Matched by command base') : undefined,
+      }));
+    }
+  }
+  for (const key of Object.keys(json.permissions)) {
+    if (key !== 'allow' && key !== 'deny') out.unparsed.push(unparsed(ctx, joinPointer('permissions', key), MSG.unknownKey));
+  }
+  return out;
 }

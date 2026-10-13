@@ -55,7 +55,7 @@ agentscope --help
 
 The output language is chosen from `--lang`, then `AGENTSCOPE_LANG`, then `LC_ALL` / `LC_MESSAGES` / `LANG`. A Japanese locale selects Japanese; anything else selects English.
 
-The exit code is `0` when the analysis completes and `2` on errors such as a missing target directory. It does not depend on whether anything was found.
+The exit code is `0` when the analysis completes (whether or not anything was found, and also for `--help` / `--version`) and `2` on errors such as an invalid option, a missing target directory, or a target that is not a directory.
 
 ### Example output
 
@@ -64,7 +64,7 @@ An excerpt from analyzing `test/fixtures/risky-project` (dummy settings used by 
 ```text
 AgentScope Security Report (v0.1.0)
 Agents: Claude Code, Cursor
-Config files: 5  Permission rules: 23  MCP servers: 4  Findings: HIGH 5 / MEDIUM 11 / LOW 0 / INFO 4
+Config files: 6  Permission rules: 29  MCP servers: 4  Findings: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
 
 ■ Security findings
   [HIGH] R001 Broad command execution is auto-approved  (Claude Code)
@@ -95,7 +95,9 @@ Missing files are skipped without error. AgentScope does not walk directories; i
 | Cursor | `.cursor/permissions.json` | project, shared | yes | `mcpAllowlist` / `terminalAllowlist` / `autoRun` |
 | Cursor | `~/.cursor/mcp.json` | user-wide | `-g` | MCP server definitions |
 | Cursor | `~/.cursor/permissions.json` | user-wide | `-g` | same as above |
-| Cursor | `.cursor/cli.json`, `~/.cursor/cli-config.json` | — | — | detected and reported as **unsupported** |
+| Cursor | `.cursor/cli.json` | project, shared | yes | Cursor CLI `permissions.allow` / `deny` (`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`) |
+| Cursor | `~/.cursor/cli-config.json` | user-wide | `-g` | same as above (other CLI preferences are skipped) |
+| Claude Code | `managed-settings.json`, `managed-settings.d/*.json`, `managed-mcp.json` | organization-managed | `-g` | in `/Library/Application Support/ClaudeCode/` (macOS), `/etc/claude-code/` (Linux / WSL), `C:\Program Files\ClaudeCode\` (Windows). Highest precedence |
 
 Both JSON and JSONC (comments, trailing commas) are supported.
 
@@ -103,24 +105,40 @@ Both JSON and JSONC (comments, trailing commas) are supported.
 
 Both agents' settings are converted into a common format (`PermissionRule`), while the differences are kept in `nativeKind` and `note`.
 
-| | Claude Code | Cursor |
+| | Claude Code | Cursor (IDE) | Cursor CLI |
+| --- | --- | --- | --- |
+| Allow | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist` (prefix match; replaces the IDE allowlist) | `permissions.allow` |
+| Ask | `permissions.ask` | (none) | (none) |
+| Deny | `permissions.deny` | (none) | `permissions.deny` (wins over allow) |
+| Hints | (none) | `autoRun.allow_instructions` / `block_instructions` (non-binding hints for a classifier; kept apart as `guidance-allow` / `guidance-block`) | (none) |
+
+### Precedence and effectiveness
+
+A rule written in a file is not always in effect. Every rule and setting carries a `status`:
+
+| status | Meaning | Examples |
 | --- | --- | --- |
-| Allow | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist` (prefix match; replaces the IDE allowlist) |
-| Ask | `permissions.ask` | (none) |
-| Deny | `permissions.deny` | (none) |
-| Hints | (none) | `autoRun.allow_instructions` / `block_instructions` (non-binding hints for a classifier; kept apart as `guidance-allow` / `guidance-block`) |
+| `active` | in effect | |
+| `ignored` | the agent does not load it | `mcp__x(...)` with parentheses, an allow rule with a wildcard in the tool name (`B*`), `Write(path)`, `Bash(command:...)`, a key placed where it cannot be set (`skipDangerousModePermissionPrompt` in project settings), a mode disabled by `disableBypassPermissionsMode: "disable"`, non-managed rules under `allowManagedPermissionRulesOnly` |
+| `overridden` | neutralized by another setting | an allow rule fully covered by a deny / ask rule (deny → ask → allow), a single-value key overridden by a higher scope (managed > local > project > user) |
+
+Findings whose underlying setting is not `active` are lowered to INFO, with the original level (`originalLevel`) and the reason (`effectNote`). They are kept rather than dropped because they become effective again if the other setting changes.
+
+Only cases that are certain are treated as neutralized. When a deny rule covers just part of an allow rule (for example allow `Bash` and deny `Bash(rm *)`), the allow rule stays `active`, so AgentScope never under-reports by guessing.
 
 ## Checks
 
 | ID | What it detects | Main levels |
 | --- | --- | --- |
-| R001 | Broad command execution is auto-approved (`Bash`, `Bash(python3 *)`, `bash` in Cursor, etc.) | HIGH / MEDIUM |
+| R001 | Broad command execution is auto-approved (`Bash`, `Bash(python3 *)`, `Bash(python3 -c *)`, `Bash(npm exec *)`, `Bash(timeout *)`, `bash` in Cursor, Cursor CLI `Shell(*)`, etc.) | HIGH / MEDIUM |
 | R002 | All MCP tools are auto-approved (`mcp__server`, `*:*`, `enableAllProjectMcpServers`, etc.) | HIGH / MEDIUM / INFO |
 | R003 | Permission checks are significantly relaxed (`defaultMode: bypassPermissions`, `skipDangerousModePermissionPrompt`, etc.) | HIGH / MEDIUM / LOW |
 | R004 | Credential-like strings written directly (known token formats, key names, credentials in URLs) | HIGH / MEDIUM |
-| R005 | Broad file access is allowed (`Edit` without a path, `Read(~/**)`, allowing edits to `.claude/**`, etc.) | HIGH / MEDIUM / LOW |
+| R005 | Broad file access is allowed (`Edit` without a path, `Read(~/**)`, edits to `.claude/**`, `.github/workflows/**`, reading `~/.aws`, etc.) | HIGH / MEDIUM / LOW |
+| R006 | Network access to any destination is allowed (`WebFetch`, `WebFetch(domain:*)`, `"*"` in `sandbox.network.allowedDomains`, Cursor CLI `WebFetch(*)`) | MEDIUM |
 | I001 | States that the actual tool list of MCP servers is not verified | INFO |
 | I002 | States that Cursor IDE settings (such as Run Mode) are not verified | INFO |
+| I003 | States that automatically executed commands are configured (hooks, `statusLine`, `apiKeyHelper`, etc.); their contents are not shown | INFO |
 
 Every finding has a rule ID, risk level, reason, source file, setting location (a JSON path), and a recommended fix. Levels come from fixed rules, never from guesses.
 
@@ -129,8 +147,10 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
 - Read-only. Files are opened with `O_RDONLY`, and the source never calls write APIs (enforced by a test)
 - Never starts or runs agents, MCP servers, or configured commands
 - No network access (a test checks that modules such as `http`, `net`, and `child_process` are never imported)
-- Never prints credential values, any part of them, or their length. For MCP servers, only the executable name, the URL host name, and the **names** of environment variables and headers are kept; arguments and values are dropped. Permission rules that contain secrets are replaced with `[REDACTED]`
-- Symbolic links are resolved first, and project settings that point outside the target directory are not read. Non-regular files (FIFOs, etc.) and files over 20 MB are not read either
+- Never prints credential values, any part of them, or their length. For MCP servers, only the executable name, the URL host name, and the **names** of environment variables and headers are kept; arguments and values are dropped. Permission rules that contain secrets (including `API_KEY=...`, `--token ...`, `curl -u user:pass`) are replaced with `[REDACTED]`, and so are key names, server names, and other names that look like secrets
+- Before printing to the terminal, control characters (ANSI escapes, newlines) and bidirectional / invisible characters from config files are escaped, so a config file cannot rewrite or disguise the report
+- Symbolic links are resolved first, and project settings that point outside the target directory are not read. Non-regular files (FIFOs, etc.), files over 20 MB, and JSON nested deeper than 256 levels are not read either
+- Objects are built without a prototype, so a `"__proto__"` key cannot make unwritten keys appear. If parsing one file fails unexpectedly, the other files are still analyzed
 - The home directory is never walked. Even with `--include-global`, only the fixed files listed above are read
 
 ## Limitations
@@ -141,7 +161,7 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
   - Cursor IDE settings (Run Mode, allowlists registered in the settings UI)
   - The tools MCP servers actually provide, and what they can reach
   - The contents of plugins, hooks, `apiKeyHelper`, and other commands
-- AgentScope does not compute the final "effective permissions" merged across files; it lists the rules of each file side by side
+- Precedence is resolved only for certain cases (see [Precedence and effectiveness](#precedence-and-effectiveness)). Partial overlaps between rules, and command-line flags, are not taken into account
 - No findings does not mean the setup is safe. Unknown settings and items that could not be analyzed are listed under "Items not analyzed"
 - Credential detection is based on patterns and key names, so it can miss things and report false positives
 - The rules follow each agent's official documentation as of October 2026:
@@ -160,10 +180,10 @@ Every finding has a rule ID, risk level, reason, source file, setting location (
   "agents": ["claude-code", "cursor"],
   "includeGlobal": false,
   "files": [{ "agent": "claude-code", "kind": "claude-settings", "scope": "project", "displayPath": ".claude/settings.json", "status": "parsed", ... }],
-  "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, ... }],
+  "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, "status": "active", ... }],
   "settings": [{ "key": "permissions.defaultMode", "value": "bypassPermissions", ... }],
   "mcpServers": [{ "name": "github", "transport": "stdio", "commandName": "npx", "envNames": ["GITHUB_TOKEN"], "approval": "approved", "toolPermissions": "unknown", ... }],
-  "findings": [{ "ruleId": "R001", "level": "HIGH", "title": "...", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "..." }],
+  "findings": [{ "ruleId": "R001", "level": "HIGH", "title": "...", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "...", "originalLevel": "HIGH (only when lowered)", "effectNote": "..." }],
   "unparsed": [{ "file": ".claude/settings.json", "pointer": "hooks", "reason": "..." }],
   "summary": { "files": 3, "rules": 12, "mcpServers": 3, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
   "disclaimer": "..."
@@ -177,6 +197,7 @@ npm install
 npm test           # Vitest
 npm run typecheck
 npm run build      # outputs to dist/
+npm run e2e        # runs the built CLI: exit codes and closed pipes
 node dist/cli.js scan test/fixtures/risky-project --lang en
 ```
 
@@ -195,7 +216,9 @@ src/
   rules/r00x-*.ts          Security Rule Engine: one check per file
   report/terminal.ts|json.ts  Report Generator
   util/safeRead.ts         read-only file access with symlink protection
+  precedence.ts            precedence across files and rule effectiveness
   util/secrets.ts          credential detection and redaction
+  util/pointer.ts          JSON paths for display (redacts secret-looking keys)
   types.ts                 common data model
   i18n.ts                  Japanese / English messages
 ```

@@ -9,6 +9,10 @@ const REC_CLAUDE = tx(
   '必要なツールだけを「mcp__<server>__<tool>」の形で個別に allow に入れてください。',
   'Add only the tools you need to allow, one by one, as "mcp__<server>__<tool>".',
 );
+const REC_CURSOR_CLI = tx(
+  '必要なツールだけを「Mcp(server:tool)」の形で permissions.allow に入れてください。',
+  'Add only the tools you need to permissions.allow as "Mcp(server:tool)".',
+);
 const REC_CURSOR = tx(
   '必要なツールだけを「server:tool」の形で mcpAllowlist に入れてください。',
   'Add only the tools you need to mcpAllowlist as "server:tool".',
@@ -59,7 +63,8 @@ export const r002: SecurityRule = {
         continue;
       }
 
-      // Cursor mcpAllowlist: server:tool（大文字小文字を区別しない、glob 可）
+      // Cursor mcpAllowlist / CLI の Mcp(...): server:tool（大文字小文字を区別しない、glob 可）
+      const recCursor = r.nativeKind.startsWith('cursor.cli.') ? REC_CURSOR_CLI : REC_CURSOR;
       const spec = r.specifier ?? '';
       const idx = spec.indexOf(':');
       const server = spec.slice(0, idx).trim();
@@ -71,14 +76,14 @@ export const r002: SecurityRule = {
           ...base,
           level: 'HIGH',
           reason: tx('すべての MCP サーバーのすべてのツールを承認なしで実行できます', 'Every tool of every MCP server can run without approval'),
-          recommendation: REC_CURSOR,
+          recommendation: recCursor,
         }));
       } else if (toolAll) {
         out.push(finding(rule, {
           ...base,
           level: 'MEDIUM',
           reason: tx(`MCP サーバー「${server}」のすべてのツールを承認なしで実行できます`, `Every tool of MCP server "${server}" can run without approval`),
-          recommendation: REC_CURSOR,
+          recommendation: recCursor,
         }));
       } else if (serverAll) {
         out.push(finding(rule, {
@@ -88,7 +93,7 @@ export const r002: SecurityRule = {
             `すべての MCP サーバーの「${tool}」ツールを承認なしで実行できます（今後追加されるサーバーも含みます）`,
             `The "${tool}" tool of every MCP server can run without approval (including servers added later)`,
           ),
-          recommendation: REC_CURSOR,
+          recommendation: recCursor,
         }));
       }
     }

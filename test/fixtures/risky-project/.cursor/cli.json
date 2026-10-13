@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Shell(git)", "Shell(npm exec)", "Write(src/**)", "WebFetch(*)"],
+    "deny": ["Shell(git push)", "Read(.env)"]
+  }
+}

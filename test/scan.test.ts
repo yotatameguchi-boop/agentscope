@@ -16,9 +16,10 @@ describe('scan: 固定フィクスチャ', () => {
       ['.mcp.json', 'parsed'],
       ['.cursor/mcp.json', 'parsed'],
       ['.cursor/permissions.json', 'parsed'],
+      ['.cursor/cli.json', 'parsed'],
     ]);
     const ids = new Set(r.findings.map((f) => f.ruleId));
-    for (const id of ['R001', 'R002', 'R003', 'R004', 'R005', 'I001', 'I002']) expect(ids, id).toContain(id);
+    for (const id of ['R001', 'R002', 'R003', 'R004', 'R005', 'R006', 'I001', 'I002']) expect(ids, id).toContain(id);
     expect(r.summary.findings.HIGH).toBeGreaterThan(0);
     // enableAllProjectMcpServers: true により .mcp.json のサーバーは承認済み
     expect(r.mcpServers.filter((s) => s.agent === 'claude-code').map((s) => s.approval)).toEqual(['approved', 'approved']);
@@ -70,16 +71,17 @@ describe('scan: オプション', () => {
       '.cursor/cli-config.json': JSON.stringify({ permissions: { allow: ['Shell(*)'] } }),
     });
 
-    const local = await scan({ root, home });
+    const managedDir = await makeDir(); // 実機の管理設定を読まないよう空のディレクトリを渡す
+    const local = await scan({ root, home, managedDir });
     expect(local.files).toEqual([]);
 
-    const g = await scan({ root, home, includeGlobal: true });
+    const g = await scan({ root, home, managedDir, includeGlobal: true });
     expect(g.files.map((f) => [f.displayPath, f.scope, f.status])).toEqual([
       ['~/.claude/settings.json', 'user', 'parsed'],
       ['~/.claude.json', 'user', 'parsed'],
       ['~/.cursor/mcp.json', 'user', 'parsed'],
       ['~/.cursor/permissions.json', 'user', 'parsed'],
-      ['~/.cursor/cli-config.json', 'user', 'unsupported'],
+      ['~/.cursor/cli-config.json', 'user', 'parsed'],
     ]);
     expect(g.mcpServers.map((s) => [s.name, s.scope])).toEqual([
       ['userSrv', 'user'],

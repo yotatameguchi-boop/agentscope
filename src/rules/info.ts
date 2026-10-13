@@ -1,6 +1,7 @@
 import { tx } from '../i18n.js';
 import type { AgentId, Finding } from '../types.js';
 import { AGENT_LABELS } from '../types.js';
+import { AUTO_EXEC_KEYS } from '../parsers/claude.js';
 import { finding, type SecurityRule } from './types.js';
 
 /**
@@ -67,5 +68,41 @@ export const i002: SecurityRule = {
         'Also review Run Mode and the allowlists in the Cursor settings.',
       ),
     })];
+  },
+};
+
+const autoExecRule = { id: 'I003', title: tx('自動実行されるコマンドが設定されている', 'Automatically executed commands are configured') };
+
+/** フックやヘルパーコマンドは、エージェントの権限ルールとは別に自動で実行される。中身は解析しないため存在だけを示す */
+export const i003: SecurityRule = {
+  ...autoExecRule,
+  description: tx(
+    'フックやステータスライン、認証ヘルパーなど、権限ルールとは別に自動実行されるコマンドの存在を明示します。',
+    'States that commands run automatically outside the permission rules, such as hooks, the status line, or auth helpers.',
+  ),
+  check(ctx) {
+    const byFile = new Map<string, string[]>();
+    const first = new Map<string, string>();
+    for (const s of ctx.settings) {
+      if (s.agent !== 'claude-code' || !AUTO_EXEC_KEYS.has(s.key) || s.status !== 'active') continue;
+      byFile.set(s.source.file, [...(byFile.get(s.source.file) ?? []), s.key]);
+      if (!first.has(s.source.file)) first.set(s.source.file, s.source.pointer);
+    }
+    return [...byFile].map(([file, keys]) =>
+      finding(autoExecRule, {
+        level: 'INFO',
+        agent: 'claude-code',
+        reason: tx(
+          `${keys.join(', ')} に、Claude Code が自動で実行するコマンドが設定されています。これらは権限ルールの確認を経ずに実行され、AgentScope は中身を解析していません。`,
+          `${keys.join(', ')} configure commands that Claude Code runs automatically. They run without going through permission rules, and AgentScope does not analyze them.`,
+        ),
+        file,
+        pointer: first.get(file)!,
+        recommendation: tx(
+          '各コマンドの内容と、リポジトリから変更されうるかを確認してください。',
+          'Review what each command does and whether it can be changed through the repository.',
+        ),
+      }),
+    );
   },
 };

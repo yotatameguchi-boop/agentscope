@@ -1,6 +1,7 @@
 import { tx, type Text } from '../i18n.js';
 import type { AgentId, SecretHit } from '../types.js';
-import { isPlainObject, joinPointer } from './jsonc.js';
+import { isPlainObject } from './jsonc.js';
+import { joinPointer } from './pointer.js';
 
 /**
  * 設定ファイル内に直接書かれた認証情報らしき文字列を探す（R004 の材料）。
@@ -12,21 +13,26 @@ interface ValuePattern {
   re: RegExp;
 }
 
-// 既知の形式。誤検知を抑えるため、プレフィックスと十分な長さの両方を要求する
+// 既知の形式。誤検知を抑えるため、プレフィックスと十分な長さの両方を要求する。
+// 先頭は \b ではなく英数字以外を条件にする（mcp__xoxb-... のように _ の直後でも検出するため）
 const VALUE_PATTERNS: ValuePattern[] = [
-  { label: tx('Anthropic APIキー', 'an Anthropic API key'), re: /\bsk-ant-[A-Za-z0-9_-]{20,}/ },
-  { label: tx('OpenAI APIキー', 'an OpenAI API key'), re: /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
-  { label: tx('GitHub トークン', 'a GitHub token'), re: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
-  { label: tx('GitLab トークン', 'a GitLab token'), re: /\bglpat-[A-Za-z0-9_-]{20,}/ },
-  { label: tx('Slack トークン', 'a Slack token'), re: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
-  { label: tx('AWS アクセスキーID', 'an AWS access key ID'), re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
-  { label: tx('Google APIキー', 'a Google API key'), re: /\bAIza[0-9A-Za-z_-]{35}/ },
-  { label: tx('Stripe シークレットキー', 'a Stripe secret key'), re: /\b[sr]k_live_[0-9A-Za-z]{20,}/ },
-  { label: tx('npm トークン', 'an npm token'), re: /\bnpm_[A-Za-z0-9]{36}/ },
-  { label: tx('Hugging Face トークン', 'a Hugging Face token'), re: /\bhf_[A-Za-z0-9]{30,}/ },
+  { label: tx('Anthropic APIキー', 'an Anthropic API key'), re: /(?<![A-Za-z0-9])sk-ant-[A-Za-z0-9_-]{20,}/ },
+  { label: tx('OpenAI APIキー', 'an OpenAI API key'), re: /(?<![A-Za-z0-9])sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
+  { label: tx('GitHub トークン', 'a GitHub token'), re: /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
+  { label: tx('GitLab トークン', 'a GitLab token'), re: /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}/ },
+  { label: tx('Slack トークン', 'a Slack token'), re: /(?<![A-Za-z0-9])xox[abposr]-[A-Za-z0-9-]{10,}/ },
+  { label: tx('AWS アクセスキーID', 'an AWS access key ID'), re: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { label: tx('Google APIキー', 'a Google API key'), re: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}/ },
+  { label: tx('Stripe シークレットキー', 'a Stripe secret key'), re: /(?<![A-Za-z0-9])[sr]k_live_[0-9A-Za-z]{20,}/ },
+  { label: tx('npm トークン', 'an npm token'), re: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}/ },
+  { label: tx('Hugging Face トークン', 'a Hugging Face token'), re: /(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}/ },
   { label: tx('秘密鍵', 'a private key'), re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { label: tx('JWT', 'a JWT'), re: /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
-  { label: tx('Bearer トークン', 'a Bearer token'), re: /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/ },
+  { label: tx('JWT', 'a JWT'), re: /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+  { label: tx('Bearer トークン', 'a Bearer token'), re: /(?<![A-Za-z0-9])Bearer\s+[A-Za-z0-9._~+/-]{20,}=*/ },
+  { label: tx('Basic 認証の資格情報', 'Basic auth credentials'), re: /(?<![A-Za-z0-9])Basic\s+[A-Za-z0-9+/]{12,}={0,2}/ },
+  { label: tx('Azure の接続文字列', 'an Azure connection string'), re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{20,}/ },
+  { label: tx('SendGrid APIキー', 'a SendGrid API key'), re: /(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/ },
+  { label: tx('Discord / Telegram ボットトークン', 'a bot token'), re: /(?<![A-Za-z0-9])\d{8,10}:AA[A-Za-z0-9_-]{30,}/ },
 ];
 
 // キー名から秘密情報を推定する
@@ -70,6 +76,39 @@ function hasUrlCredential(value: string): boolean {
   return false;
 }
 
+/**
+ * 文字列の中に埋め込まれた資格情報を探す。
+ * 例: `API_KEY=abc...`、`password: abc...`、`--token abc...`、`curl -u user:pass`
+ */
+function findInlineSecret(value: string): Text | undefined {
+  for (const m of value.matchAll(/(?:^|[\s;&|'"(?,])(?:export\s+)?([A-Za-z_][\w.-]*)\s*[=:]\s*(['"]?)([^\s'";&|)?]+)\2/g)) {
+    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return tx(`「${m[1]}」の値`, `the value of ${m[1]}`);
+  }
+  for (const m of value.matchAll(/(?:^|\s)--?([A-Za-z][\w-]*)\s+(['"]?)([^\s'"-][^\s'"]*)\2/g)) {
+    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return tx(`引数 ${m[1]} の値`, `the value of argument ${m[1]}`);
+  }
+  const user = /(?:^|\s)(?:-u|--user)\s+(['"]?)[^\s:'"]+:([^\s'"]+)\1/.exec(value);
+  if (user && !/^\$\{?[A-Za-z_][\w:]*\}?$/.test(user[2]!)) return tx('ユーザー名とパスワード', 'a username and password');
+  return undefined;
+}
+
+/** 秘密情報らしいフラグ名か（--api-key, --token, --password など） */
+function isSecretFlag(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  const m = /^--?([A-Za-z][\w-]*)$/.exec(v);
+  return m !== null && SECRET_KEY_RE.test(m[1]!);
+}
+
+/** キー名・サーバー名などの「名前」に秘密情報が入っていないか（名前は表示するため） */
+export function looksLikeSecretName(name: string): boolean {
+  return matchValuePattern(name) !== undefined || hasUrlCredential(name) || findInlineSecret(name) !== undefined;
+}
+
+/** 名前を表示する前に、秘密情報らしければ伏せる */
+export function redactName(name: string): string {
+  return looksLikeSecretName(name) ? '[REDACTED]' : name;
+}
+
 /** 1つの文字列値を検査する。keyName はその値のキー名（配列要素なら直前のキー名） */
 export function classifySecret(keyName: string | undefined, value: string): Omit<SecretHit, 'agent' | 'file' | 'pointer'> | undefined {
   const label = matchValuePattern(value);
@@ -81,8 +120,11 @@ export function classifySecret(keyName: string | undefined, value: string): Omit
     return { kind: 'key-name', label: tx(`引数 ${flag[1]}`, `Argument ${flag[1]}`) };
   }
   if (keyName && SECRET_KEY_RE.test(keyName) && !isReferenceOrPlaceholder(value)) {
-    return { kind: 'key-name', label: tx(`「${keyName}」`, `Key "${keyName}"`) };
+    const shown = redactName(keyName);
+    return { kind: 'key-name', label: tx(`「${shown}」`, `Key "${shown}"`) };
   }
+  const inline = findInlineSecret(value);
+  if (inline) return { kind: 'key-name', label: inline };
   return undefined;
 }
 
@@ -90,12 +132,21 @@ export function classifySecret(keyName: string | undefined, value: string): Omit
 export function scanForSecrets(value: unknown, agent: AgentId, file: string, pointer = ''): SecretHit[] {
   const hits: SecretHit[] = [];
   const visit = (v: unknown, ptr: string, keyName: string | undefined, depth: number) => {
-    if (depth > 64) return;
+    if (depth > 256) return;
     if (typeof v === 'string') {
       const hit = classifySecret(keyName, v);
       if (hit) hits.push({ agent, file, pointer: ptr, ...hit });
     } else if (Array.isArray(v)) {
-      v.forEach((item, i) => visit(item, joinPointer(ptr, i), keyName, depth + 1));
+      v.forEach((item, i) => {
+        const p = joinPointer(ptr, i);
+        // ["--token", "abc..."] のように、フラグの次の要素に値を置く形
+        if (typeof item === 'string' && i > 0 && isSecretFlag(v[i - 1]) && !isReferenceOrPlaceholder(item) && !classifySecret(keyName, item)) {
+          const flag = String(v[i - 1]).replace(/^--?/, '');
+          hits.push({ agent, file, pointer: p, kind: 'key-name', label: tx(`引数 ${flag} の値`, `the value of argument ${flag}`) });
+          return;
+        }
+        visit(item, p, keyName, depth + 1);
+      });
     } else if (isPlainObject(v)) {
       for (const [k, child] of Object.entries(v)) visit(child, joinPointer(ptr, k), k, depth + 1);
     }

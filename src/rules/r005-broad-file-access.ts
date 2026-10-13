@@ -1,19 +1,26 @@
 import { tx, type Text } from '../i18n.js';
-import type { Finding, RiskLevel } from '../types.js';
+import type { AgentId, Finding, RiskLevel } from '../types.js';
 import { redactIfSecret } from '../util/secrets.js';
 import { finding, type SecurityRule } from './types.js';
 
 const rule = { id: 'R005', title: tx('広範囲のファイル操作を許可する設定', 'Broad file access is allowed') };
 
-/** ファイルシステム全体、またはホームディレクトリ全体を指すパターン */
-function isMachineWide(spec: string): boolean {
+const GLOB_TAIL = '(?:\\*\\*?(?:\\/\\*\\*?)*)?\\/?$';
+
+/**
+ * ファイルシステム全体、またはホームディレクトリ全体を指すパターン。
+ * Claude Code は「//」が絶対パスで「/」は設定ファイル基準。Cursor CLI は「/」が絶対パス。
+ */
+function isMachineWide(spec: string, agent: AgentId): boolean {
   const s = spec.trim().replace(/\\/g, '/');
-  return /^(?:\/\/|~\/?)(?:\*\*?(?:\/\*\*?)*)?\/?$/.test(s) || /^\/\/[a-zA-Z]\/\*\*$/.test(s);
+  const root = agent === 'claude-code' ? '(?:\\/\\/(?:[a-zA-Z]\\/)?|~\\/?)' : '(?:\\/|~\\/?|[a-zA-Z]:\\/)';
+  return new RegExp(`^${root}${GLOB_TAIL}`).test(s);
 }
 
 /** 作業ディレクトリ全体（どの深さにも一致）を指すパターン */
-function isProjectWide(spec: string): boolean {
-  return /^(?:\.\/|\/)?\*\*?(?:\/\*+)?$/.test(spec.trim());
+function isProjectWide(spec: string, agent: AgentId): boolean {
+  const re = agent === 'claude-code' ? /^(?:\.\/|\/)?\*\*?(?:\/\*+)?$/ : /^(?:\.\/)?\*\*?(?:\/\*+)?$/;
+  return re.test(spec.trim());
 }
 
 /** 書き換えられると権限設定や自動実行に影響するファイル */
@@ -25,6 +32,10 @@ const SENSITIVE_WRITE: Array<{ re: RegExp; label: Text }> = [
   { re: /(?:^|\/)\.git(?:\/\*\*)?$/, label: tx('Git ディレクトリ', 'the Git directory') },
   { re: /(?:^|\/)\.(?:bashrc|zshrc|profile|bash_profile|zprofile|zshenv)$/, label: tx('シェルの起動ファイル', 'shell startup files') },
   { re: /(?:^|\/)\.ssh(?:\/|$)/, label: tx('SSH の鍵・設定', 'SSH keys or config') },
+  { re: /(?:^|\/)\.github\/workflows(?:\/|$)/, label: tx('GitHub Actions のワークフロー', 'GitHub Actions workflows') },
+  { re: /(?:^|\/)\.vscode\/(?:tasks|settings|launch)\.json$|(?:^|\/)\.vscode(?:\/\*\*)?$/, label: tx('VS Code のタスク・設定', 'VS Code tasks or settings') },
+  { re: /(?:^|\/)\.husky(?:\/|$)/, label: tx('Git フック（husky）', 'Git hooks (husky)') },
+  { re: /(?:^|\/)\.(?:npmrc|yarnrc(?:\.yml)?|pypirc)$/, label: tx('パッケージマネージャーの設定', 'package manager config') },
 ];
 
 const SENSITIVE_READ: Array<{ re: RegExp; label: Text }> = [
@@ -32,8 +43,15 @@ const SENSITIVE_READ: Array<{ re: RegExp; label: Text }> = [
   { re: /(?:^|\/)\.aws(?:\/|$)/, label: tx('AWS の認証情報', 'AWS credentials') },
   { re: /(?:^|\/)\.env(?:\.[\w.-]+)?$/, label: tx('.env ファイル', '.env files') },
   { re: /(?:^|\/)\.gnupg(?:\/|$)/, label: tx('GPG の鍵', 'GPG keys') },
+  { re: /(?:^|\/)\.(?:netrc|git-credentials|npmrc|pypirc)$/, label: tx('認証情報を含む設定ファイル', 'files that hold credentials') },
+  { re: /(?:^|\/)\.docker\/config\.json$|(?:^|\/)\.kube(?:\/|$)|(?:^|\/)\.config\/(?:gh|gcloud)(?:\/|$)|(?:^|\/)\.azure(?:\/|$)/, label: tx('クラウド・コンテナの認証情報', 'cloud or container credentials') },
+  { re: /\.(?:pem|key|p12|pfx)$|(?:^|\/)id_(?:rsa|ed25519|ecdsa)$/, label: tx('秘密鍵ファイル', 'private key files') },
 ];
 
+const REC_CURSOR = tx(
+  'Write(src/**) のように、作業に必要なディレクトリだけに限定してください。秘密情報を含むパスは deny に入れてください。',
+  'Limit it to the directories the work needs, such as Write(src/**). Put paths that hold secrets in deny.',
+);
 const REC_RULE = tx(
   'Edit(/src/**) のように、作業に必要なディレクトリだけに限定してください。秘密情報を含むパスは Read の deny ルールに入れてください。',
   'Limit it to the directories the work needs, such as Edit(/src/**). Put paths that hold secrets in Read deny rules.',
@@ -49,7 +67,7 @@ export const r005: SecurityRule = {
     const out: Finding[] = [];
 
     for (const r of ctx.rules) {
-      if (r.agent !== 'claude-code' || r.effect !== 'allow') continue;
+      if (r.effect !== 'allow') continue;
       if (r.category !== 'file-write' && r.category !== 'file-read') continue;
       const write = r.category === 'file-write';
       const spec = r.specifier?.trim();
@@ -68,10 +86,10 @@ export const r005: SecurityRule = {
               `${r.tool} がパスの限定なしで許可されており、作業ディレクトリ外のファイルも承認なしで読めます`,
               `${r.tool} is allowed without a path restriction, so files outside the working directory can be read without approval`,
             );
-      } else if (isMachineWide(spec)) {
+      } else if (isMachineWide(spec, r.agent)) {
         level = write ? 'HIGH' : 'MEDIUM';
         reason = tx(`「${spec}」はファイルシステム全体またはホームディレクトリ全体を指します`, `"${spec}" covers the entire filesystem or home directory`);
-      } else if (write && isProjectWide(spec)) {
+      } else if (write && isProjectWide(spec, r.agent)) {
         level = 'LOW';
         reason = tx(
           `「${spec}」は作業ディレクトリ内のすべてのファイル（設定ファイルを含む）の書き換えを許可します`,
@@ -90,13 +108,14 @@ export const r005: SecurityRule = {
             : tx(`${hit.label.ja}の読み取りを承認なしで許可しています`, `Reading ${hit.label.en} is allowed without approval`);
         }
       }
-      if (level && reason) out.push(finding(rule, { ...base, level, reason, recommendation: REC_RULE }));
+      if (level && reason) out.push(finding(rule, { ...base, level, reason, recommendation: r.agent === 'cursor' ? REC_CURSOR : REC_RULE }));
     }
 
     for (const s of ctx.settings) {
       if (s.agent !== 'claude-code' || s.key !== 'permissions.additionalDirectories' || typeof s.value !== 'string') continue;
       const v = s.value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-      if (v === '' || v === '/' || v === '~' || /^[a-zA-Z]:$/.test(v) || v === '//') {
+      const home = ctx.home?.replace(/\\/g, '/').replace(/\/+$/, '');
+      if (v === '' || v === '/' || v === '~' || /^[a-zA-Z]:$/.test(v) || v === '//' || (home !== undefined && v === home)) {
         out.push(finding(rule, {
           level: 'MEDIUM',
           agent: s.agent,

@@ -83,7 +83,8 @@ describe('parseClaudeSettings', () => {
 
   it('括弧付きの mcp__ ルールは無視される旨を注記する', () => {
     const r = parseClaudeSettings(claudeCtx, { permissions: { allow: ['mcp__gh__run(x)'] } });
-    expect(r.rules[0]!.note?.ja).toMatch(/無視/);
+    expect(r.rules[0]!.status).toBe('ignored');
+    expect(r.rules[0]!.statusNote?.ja).toMatch(/無視/);
   });
 
   it('apiKeyHelper のコマンドや env の値を表示用データに含めない', () => {

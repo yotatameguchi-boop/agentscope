@@ -26,5 +26,5 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      - name: CLI の動作確認
-        run: node dist/cli.js scan test/fixtures/risky-project --format json
+      - name: CLI の動作確認（終了コード・パイプ切断）
+        run: npm run e2e

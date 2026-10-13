@@ -1,5 +1,6 @@
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { tx, type Text } from '../i18n.js';
+import type { Text } from '../i18n.js';
 import type { AgentId, ConfigKind, ConfigScope } from '../types.js';
 import { isInside } from '../util/safeRead.js';
 
@@ -19,13 +20,18 @@ export interface DiscoverOptions {
   home: string;
   agents: AgentId[];
   includeGlobal: boolean;
+  /** Claude Code の管理設定ディレクトリ（managed-settings.json などの置き場所） */
+  managedDir?: string;
 }
+
+/** managed-settings.d/ に置ける分割ファイルの上限。決まった1ディレクトリだけを、再帰せずに読む */
+const MAX_DROP_INS = 100;
 
 /**
  * 決まった場所だけを見る。ディレクトリの再帰走査はしない（ホームディレクトリ全体を走査しないため）。
  * 存在しないファイルはここではまだ判定せず、読み取り時にスキップする。
  */
-export function discoverCandidates(opts: DiscoverOptions): Candidate[] {
+export async function discoverCandidates(opts: DiscoverOptions): Promise<Candidate[]> {
   const { root, home } = opts;
   const p = (...seg: string[]) => path.join(...seg);
   const out: Candidate[] = [];
@@ -41,6 +47,7 @@ export function discoverCandidates(opts: DiscoverOptions): Candidate[] {
         { agent: 'claude-code', kind: 'claude-settings', scope: 'user', path: p(home, '.claude', 'settings.json') },
         { agent: 'claude-code', kind: 'claude-global-state', scope: 'user', path: p(home, '.claude.json') },
       );
+      if (opts.managedDir) out.push(...(await managedCandidates(opts.managedDir)));
     }
   }
 
@@ -48,30 +55,39 @@ export function discoverCandidates(opts: DiscoverOptions): Candidate[] {
     out.push(
       { agent: 'cursor', kind: 'cursor-mcp', scope: 'project', path: p(root, '.cursor', 'mcp.json'), confineTo: root },
       { agent: 'cursor', kind: 'cursor-permissions', scope: 'project', path: p(root, '.cursor', 'permissions.json'), confineTo: root },
-      {
-        agent: 'cursor',
-        kind: 'unsupported',
-        scope: 'project',
-        path: p(root, '.cursor', 'cli.json'),
-        confineTo: root,
-        unsupportedReason: tx('Cursor CLI の権限設定（cli.json）は v0.1 では解析対象外です', 'Cursor CLI permission settings (cli.json) are not supported in v0.1'),
-      },
+      { agent: 'cursor', kind: 'cursor-cli', scope: 'project', path: p(root, '.cursor', 'cli.json'), confineTo: root },
     );
     if (opts.includeGlobal) {
       out.push(
         { agent: 'cursor', kind: 'cursor-mcp', scope: 'user', path: p(home, '.cursor', 'mcp.json') },
         { agent: 'cursor', kind: 'cursor-permissions', scope: 'user', path: p(home, '.cursor', 'permissions.json') },
-        {
-          agent: 'cursor',
-          kind: 'unsupported',
-          scope: 'user',
-          path: p(home, '.cursor', 'cli-config.json'),
-          unsupportedReason: tx('Cursor CLI の権限設定（cli-config.json）は v0.1 では解析対象外です', 'Cursor CLI permission settings (cli-config.json) are not supported in v0.1'),
-        },
+        { agent: 'cursor', kind: 'cursor-cli', scope: 'user', path: p(home, '.cursor', 'cli-config.json') },
       );
     }
   }
 
+  return out;
+}
+
+/**
+ * Claude Code の管理設定。managed-settings.json と managed-settings.d/*.json（名前順にマージ）、managed-mcp.json。
+ * https://code.claude.com/docs/en/managed-settings
+ */
+async function managedCandidates(dir: string): Promise<Candidate[]> {
+  const out: Candidate[] = [];
+  let dropIns: string[] = [];
+  try {
+    dropIns = (await fs.readdir(path.join(dir, 'managed-settings.d'))).filter((n) => n.endsWith('.json')).sort().slice(0, MAX_DROP_INS);
+  } catch {
+    // ディレクトリがなければ分割ファイルはない
+  }
+  for (const n of dropIns) {
+    out.push({ agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.d', n) });
+  }
+  out.push(
+    { agent: 'claude-code', kind: 'claude-settings', scope: 'managed', path: path.join(dir, 'managed-settings.json') },
+    { agent: 'claude-code', kind: 'claude-mcp', scope: 'managed', path: path.join(dir, 'managed-mcp.json') },
+  );
   return out;
 }
 

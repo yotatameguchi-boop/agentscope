@@ -54,7 +54,7 @@ agentscope --help
 
 表示言語は `--lang` を最優先し、次に環境変数 `AGENTSCOPE_LANG`、`LC_ALL` / `LC_MESSAGES` / `LANG` の順で判定します。日本語のロケールなら日本語、それ以外は英語です。
 
-終了コードは、分析できたとき `0`、対象ディレクトリが見つからないなどのエラー時に `2` です。検出の有無では変わりません。
+終了コードは、分析できたとき（検出の有無によらない。`--help` / `--version` も含む）`0`、不正なオプション・対象ディレクトリが見つからない・ディレクトリではないなどのエラー時に `2` です。
 
 ### 出力例
 
@@ -63,7 +63,7 @@ agentscope --help
 ```text
 AgentScope Security Report (v0.1.0)
 対象エージェント: Claude Code, Cursor
-設定ファイル: 5  権限ルール: 23  MCPサーバー: 4  検出: HIGH 5 / MEDIUM 11 / LOW 0 / INFO 4
+設定ファイル: 6  権限ルール: 29  MCPサーバー: 4  検出: HIGH 6 / MEDIUM 13 / LOW 0 / INFO 5
 
 ■ 検出されたリスク
   [HIGH] R001 広範囲のコマンド実行を自動承認する設定  (Claude Code)
@@ -94,7 +94,9 @@ AgentScope Security Report (v0.1.0)
 | Cursor | `.cursor/permissions.json` | プロジェクト共有 | ○ | `mcpAllowlist` / `terminalAllowlist` / `autoRun` |
 | Cursor | `~/.cursor/mcp.json` | ユーザー全体 | `-g` | MCP サーバー定義 |
 | Cursor | `~/.cursor/permissions.json` | ユーザー全体 | `-g` | 同上 |
-| Cursor | `.cursor/cli.json`, `~/.cursor/cli-config.json` | — | — | 存在は検出するが **未対応** と表示 |
+| Cursor | `.cursor/cli.json` | プロジェクト共有 | ○ | Cursor CLI の `permissions.allow` / `deny`（`Shell` / `Read` / `Write` / `WebFetch` / `Mcp`） |
+| Cursor | `~/.cursor/cli-config.json` | ユーザー全体 | `-g` | 同上（CLI の他の設定は読み飛ばす） |
+| Claude Code | `managed-settings.json`、`managed-settings.d/*.json`、`managed-mcp.json` | 組織の管理設定 | `-g` | `/Library/Application Support/ClaudeCode/`（macOS）、`/etc/claude-code/`（Linux / WSL）、`C:\Program Files\ClaudeCode\`（Windows）。最優先 |
 
 JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 
@@ -102,24 +104,40 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 
 両エージェントの設定は共通形式（`PermissionRule`）に変換しますが、意味の違いは `nativeKind` と `note` に残します。
 
-| | Claude Code | Cursor |
+| | Claude Code | Cursor（IDE） | Cursor CLI |
+| --- | --- | --- | --- |
+| 許可 | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist`（前方一致。IDE 側の許可リストを置き換える） | `permissions.allow` |
+| 要承認 | `permissions.ask` | （なし） | （なし） |
+| 禁止 | `permissions.deny` | （なし） | `permissions.deny`（allow より優先） |
+| ヒント | （なし） | `autoRun.allow_instructions` / `block_instructions`（分類器へのヒントで強制力なし。`guidance-allow` / `guidance-block` として区別） | （なし） |
+
+### 優先順位と有効性
+
+ファイルに書かれたルールが、常に効いているとは限りません。各ルール・設定には `status` が付きます。
+
+| status | 意味 | 例 |
 | --- | --- | --- |
-| 許可 | `permissions.allow` | `mcpAllowlist`, `terminalAllowlist`（前方一致。IDE 側の許可リストを置き換える） |
-| 要承認 | `permissions.ask` | （なし） |
-| 禁止 | `permissions.deny` | （なし） |
-| ヒント | （なし） | `autoRun.allow_instructions` / `block_instructions`（分類器へのヒントで強制力なし。`guidance-allow` / `guidance-block` として区別） |
+| `active` | 有効 | |
+| `ignored` | エージェントが読み込まない | 括弧付きの `mcp__x(...)`、ツール名にワイルドカードを含む allow（`B*`）、`Write(パス)`、`Bash(command:...)`、置けない場所のキー（project 設定の `skipDangerousModePermissionPrompt`）、`disableBypassPermissionsMode: "disable"` で使えないモード、`allowManagedPermissionRulesOnly` 下の管理設定以外のルール |
+| `overridden` | 他の設定に打ち消される | deny / ask に完全に覆われる allow（評価順は deny → ask → allow）、上位スコープに上書きされる単一値のキー（managed > local > project > user） |
+
+根拠の設定が `active` でない検出は INFO に下げ、元のレベル（`originalLevel`）と理由（`effectNote`）を付けます。消さずに残すのは、他の設定が変われば再び有効になるためです。
+
+打ち消しと判定するのは確実な場合だけです。deny が allow の一部だけを覆う場合（例: allow `Bash` と deny `Bash(rm *)`）は allow を `active` のままにし、推測で危険を過小評価しません。
 
 ## 検査ルール
 
 | ID | 内容 | 主なリスクレベル |
 | --- | --- | --- |
-| R001 | 広範囲のコマンド実行を自動承認する設定（`Bash`、`Bash(python3 *)`、Cursor の `bash` など） | HIGH / MEDIUM |
+| R001 | 広範囲のコマンド実行を自動承認する設定（`Bash`、`Bash(python3 *)`、`Bash(python3 -c *)`、`Bash(npm exec *)`、`Bash(timeout *)`、Cursor の `bash`、Cursor CLI の `Shell(*)` など） | HIGH / MEDIUM |
 | R002 | すべての MCP ツールを自動承認する設定（`mcp__server`、`*:*`、`enableAllProjectMcpServers` など） | HIGH / MEDIUM / INFO |
 | R003 | 権限チェックを大幅に緩和する設定（`defaultMode: bypassPermissions`、`skipDangerousModePermissionPrompt` など） | HIGH / MEDIUM / LOW |
 | R004 | 認証情報らしき文字列の直書き（既知のトークン形式、キー名、URL 内の認証情報） | HIGH / MEDIUM |
-| R005 | 広範囲のファイル操作を許可する設定（パス限定のない `Edit`、`Read(~/**)`、`.claude/**` の書き換え許可など） | HIGH / MEDIUM / LOW |
+| R005 | 広範囲のファイル操作を許可する設定（パス限定のない `Edit`、`Read(~/**)`、`.claude/**` や `.github/workflows/**` の書き換え、`~/.aws` の読み取りなど） | HIGH / MEDIUM / LOW |
+| R006 | 任意の通信先へのアクセスを許可する設定（`WebFetch`、`WebFetch(domain:*)`、`sandbox.network.allowedDomains` の `"*"`、Cursor CLI の `WebFetch(*)`） | MEDIUM |
 | I001 | MCP サーバーの実際のツール一覧は未検証であることの明示 | INFO |
 | I002 | Cursor の IDE 側設定（Run Mode など）は未検証であることの明示 | INFO |
+| I003 | 自動実行されるコマンド（フック、`statusLine`、`apiKeyHelper` など）が設定されていることの明示。中身は表示しない | INFO |
 
 各検出には、ルールID・リスクレベル・検出理由・根拠ファイル・該当する設定項目（JSON 上の位置）・推奨される対応が付きます。リスクレベルは固定のルールで決まり、推測による判定はしません。
 
@@ -128,8 +146,10 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
 - 読み取り専用で動作します。ファイルは `O_RDONLY` で開き、書き込み系の API はソースコード上で使っていません（テストで検査しています）
 - エージェント、MCP サーバー、設定に書かれたコマンドを起動・実行しません
 - ネットワーク通信をしません（`http` / `net` / `child_process` などのモジュールを読み込まないことをテストで検査しています）
-- 認証情報の値・その一部・長さを出力しません。MCP サーバーは起動コマンドの実行ファイル名、URL のホスト名、環境変数・ヘッダーの**名前**だけを扱い、引数や値は保持しません。秘密情報を含む権限ルール文字列は `[REDACTED]` に置き換えます
-- シンボリックリンクは解決先を確認し、プロジェクトの設定が対象ディレクトリの外を指している場合は読みません。通常ファイル以外（FIFO など）や 20MB を超えるファイルも読みません
+- 認証情報の値・その一部・長さを出力しません。MCP サーバーは起動コマンドの実行ファイル名、URL のホスト名、環境変数・ヘッダーの**名前**だけを扱い、引数や値は保持しません。秘密情報を含む権限ルール文字列（`API_KEY=...`、`--token ...`、`curl -u user:pass` なども含む）は `[REDACTED]` に置き換えます。キー名・サーバー名などの名前が秘密情報らしい場合も伏せます
+- 端末に出す前に、設定ファイル由来の制御文字（ANSI エスケープ、改行など）と双方向制御文字・不可視文字をエスケープし、設定ファイルでレポートの表示を書き換えたり偽装したりできないようにしています
+- シンボリックリンクは解決先を確認し、プロジェクトの設定が対象ディレクトリの外を指している場合は読みません。通常ファイル以外（FIFO など）、20MB を超えるファイル、入れ子が 256 段を超える JSON も読みません
+- オブジェクトはプロトタイプなしで組み立てるため、`"__proto__"` キーで書かれていないキーを見せかけることはできません。1つのファイルの解析が想定外に失敗しても、他のファイルの分析は続けます
 - ホームディレクトリ全体は走査しません。`--include-global` でも上表の決まったファイルだけを読みます
 
 ## 制約
@@ -140,7 +160,7 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
   - Cursor の IDE 設定（Run Mode、設定画面で登録した許可リスト）
   - MCP サーバーが実際に提供するツールと、その操作範囲
   - プラグイン、フック、`apiKeyHelper` などのコマンドの中身
-- 複数ファイルの設定を合成した「最終的な有効権限」は計算せず、ファイルごとのルールを並べて表示します
+- 優先順位は確実に言える場合だけ解決します（[優先順位と有効性](#優先順位と有効性)を参照）。ルールの部分的な重なりや、起動時のオプションは考慮しません
 - 検出がないことは安全を意味しません。不明な設定や解析できなかった項目は「解析できなかった項目」に表示します
 - 認証情報の検出はパターンとキー名による推定のため、見逃しや誤検知がありえます
 - 仕様は各エージェントの公式ドキュメント（2026年10月時点）に基づきます
@@ -159,10 +179,10 @@ JSON と JSONC（コメント・末尾カンマ）の両方を読めます。
   "agents": ["claude-code", "cursor"],
   "includeGlobal": false,
   "files": [{ "agent": "claude-code", "kind": "claude-settings", "scope": "project", "displayPath": ".claude/settings.json", "status": "parsed", ... }],
-  "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, ... }],
+  "rules": [{ "agent": "claude-code", "effect": "allow", "category": "command", "tool": "Bash", "specifier": "python3 *", "nativeKind": "claude.permissions.allow", "source": { "file": ".claude/settings.json", "pointer": "permissions.allow[1]" }, "status": "active", ... }],
   "settings": [{ "key": "permissions.defaultMode", "value": "bypassPermissions", ... }],
   "mcpServers": [{ "name": "github", "transport": "stdio", "commandName": "npx", "envNames": ["GITHUB_TOKEN"], "approval": "approved", "toolPermissions": "unknown", ... }],
-  "findings": [{ "ruleId": "R001", "level": "HIGH", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "..." }],
+  "findings": [{ "ruleId": "R001", "level": "HIGH", "reason": "...", "file": "...", "pointer": "...", "evidence": "...", "recommendation": "...", "originalLevel": "HIGH (only when lowered)", "effectNote": "..." }],
   "unparsed": [{ "file": ".claude/settings.json", "pointer": "hooks", "reason": "..." }],
   "summary": { "files": 3, "rules": 12, "mcpServers": 3, "findings": { "HIGH": 1, "MEDIUM": 2, "LOW": 0, "INFO": 1 } },
   "disclaimer": "..."
@@ -176,6 +196,7 @@ npm install
 npm test           # Vitest
 npm run typecheck
 npm run build      # dist/ に出力
+npm run e2e        # ビルドした CLI を起動して終了コードとパイプ切断を確認
 node dist/cli.js scan test/fixtures/risky-project
 ```
 
@@ -194,7 +215,9 @@ src/
   rules/r00x-*.ts          Security Rule Engine：検査ルール（1ルール1ファイル）
   report/terminal.ts|json.ts  Report Generator
   util/safeRead.ts         読み取り専用・シンボリックリンク対策付きのファイル読み込み
+  precedence.ts            ファイル間の優先順位とルールの有効性
   util/secrets.ts          認証情報らしき文字列の検出と伏せ字
+  util/pointer.ts          表示用の JSON パス（秘密情報らしいキー名は伏せる）
   types.ts                 共通データ形式
   i18n.ts                  表示文言の日英切り替え
 ```

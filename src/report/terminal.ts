@@ -4,6 +4,7 @@ import {
   AGENT_LABELS,
   type AgentId,
   type ConfigScope,
+  type EffectStatus,
   type FileStatus,
   type LocalizedScanResult,
   type McpApproval,
@@ -51,11 +52,14 @@ interface Labels {
   hRecs: string;
   hUnparsed: string;
   paren: (s: string) => string;
+  ruleStatus: Record<Exclude<EffectStatus, 'active'>, string>;
+  effect2: string;
+  originally: (level: string) => string;
 }
 
 const LABELS: Record<Lang, Labels> = {
   ja: {
-    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体' },
+    scope: { project: 'プロジェクト共有', 'project-local': 'プロジェクト個人', user: 'ユーザー全体', managed: '組織の管理設定' },
     status: { parsed: '解析済み', 'parse-error': '解析エラー', skipped: 'スキップ', unsupported: '未対応' },
     effect: { allow: '許可', ask: '要承認', deny: '禁止', 'guidance-allow': '許可寄りヒント', 'guidance-block': '拒否寄りヒント' },
     approval: { approved: '承認済み', rejected: '拒否', 'not-required': '承認不要', unknown: '不明' },
@@ -90,9 +94,12 @@ const LABELS: Record<Lang, Labels> = {
     hRecs: '推奨される対応',
     hUnparsed: '解析できなかった項目',
     paren: (s) => `（${s}）`,
+    ruleStatus: { ignored: '無効', overridden: '打ち消し' },
+    effect2: '有効性',
+    originally: (l) => `（本来は ${l}）`,
   },
   en: {
-    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide' },
+    scope: { project: 'project, shared', 'project-local': 'project, personal', user: 'user-wide', managed: 'organization-managed' },
     status: { parsed: 'parsed', 'parse-error': 'parse error', skipped: 'skipped', unsupported: 'unsupported' },
     effect: { allow: 'allow', ask: 'ask', deny: 'deny', 'guidance-allow': 'hint: allow', 'guidance-block': 'hint: block' },
     approval: { approved: 'approved', rejected: 'rejected', 'not-required': 'not required', unknown: 'unknown' },
@@ -127,10 +134,15 @@ const LABELS: Record<Lang, Labels> = {
     hRecs: 'Recommendations',
     hUnparsed: 'Items not analyzed',
     paren: (s) => ` (${s})`,
+    ruleStatus: { ignored: 'not applied', overridden: 'neutralized' },
+    effect2: 'Effect',
+    originally: (l) => ` (originally ${l})`,
   },
 };
 
-export function renderTerminal(result: LocalizedScanResult, opts: TerminalOptions = {}): string {
+export function renderTerminal(input: LocalizedScanResult, opts: TerminalOptions = {}): string {
+  // 設定ファイル由来の文字列に制御文字や双方向制御文字が含まれていても、端末の表示を書き換えられないようにする
+  const result = sanitizeDeep(input);
   const L = LABELS[result.lang];
   const c = pc.createColors(opts.color ?? false);
   const levelColor: Record<RiskLevel, (s: string) => string> = {
@@ -179,7 +191,9 @@ export function renderTerminal(result: LocalizedScanResult, opts: TerminalOption
     for (const r of rules) {
       const eff = pad(L.effect[r.effect], width);
       const effColored = r.effect === 'deny' ? c.green(eff) : r.effect === 'allow' ? c.yellow(eff) : eff;
-      lines.push(`    ${effColored}  ${r.raw}  ${c.dim(`${r.source.file} ${r.source.pointer}`)}`);
+      const tag = r.status === 'active' ? '' : ` ${c.yellow(`[${L.ruleStatus[r.status]}]`)}`;
+      lines.push(`    ${effColored}  ${r.raw}${tag}  ${c.dim(`${r.source.file} ${r.source.pointer}`)}`);
+      if (r.statusNote) lines.push(c.dim(`      * ${r.statusNote}`));
       if (r.note) lines.push(c.dim(`      * ${r.note}`));
     }
   }
@@ -187,7 +201,9 @@ export function renderTerminal(result: LocalizedScanResult, opts: TerminalOption
   if (result.settings.length > 0) {
     h(L.hSettings);
     for (const s of result.settings) {
-      lines.push(`  [${agentLabel(s.agent)}] ${s.key} = ${s.value}  ${c.dim(s.source.file)}`);
+      const tag = s.status === 'active' ? '' : ` ${c.yellow(`[${L.ruleStatus[s.status]}]`)}`;
+      lines.push(`  [${agentLabel(s.agent)}] ${s.key} = ${s.value}${tag}  ${c.dim(s.source.file)}`);
+      if (s.statusNote) lines.push(c.dim(`      * ${s.statusNote}`));
     }
   }
 
@@ -208,8 +224,10 @@ export function renderTerminal(result: LocalizedScanResult, opts: TerminalOption
   h(L.hFindings);
   if (result.findings.length === 0) lines.push(`  ${L.noFindings}`);
   for (const x of result.findings) {
-    lines.push(`  ${levelColor[x.level](`[${x.level}]`)} ${x.ruleId} ${x.title}  ${c.dim(`(${agentLabel(x.agent)})`)}`);
+    const orig = x.originalLevel ? c.dim(L.originally(x.originalLevel)) : '';
+    lines.push(`  ${levelColor[x.level](`[${x.level}]`)}${orig} ${x.ruleId} ${x.title}  ${c.dim(`(${agentLabel(x.agent)})`)}`);
     lines.push(`      ${L.reason}: ${x.reason}`);
+    if (x.effectNote) lines.push(`      ${L.effect2}: ${x.effectNote}`);
     lines.push(`      ${L.location}: ${x.file}  ${x.pointer}`);
     if (x.evidence) lines.push(`      ${L.evidence}: ${x.evidence}`);
     lines.push(`      ${L.fix}: ${x.recommendation}`);
@@ -242,4 +260,23 @@ function displayWidth(s: string): number {
 
 function pad(s: string, width: number): string {
   return s + ' '.repeat(Math.max(0, width - displayWidth(s)));
+}
+
+/**
+ * 端末に出す前に、制御文字（ESC による色・カーソル操作、改行など）と、
+ * 表示順を入れ替える双方向制御文字・不可視文字を \xNN / \u{NNNN} 形式に置き換える。
+ */
+export function sanitizeForTerminal(s: string): string {
+  return s
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`)
+    .replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2028\u2029\u2060-\u2064\u2066-\u2069\ufeff]/g, (ch) => `\\u{${ch.charCodeAt(0).toString(16)}}`);
+}
+
+function sanitizeDeep<T>(v: T): T {
+  if (typeof v === 'string') return sanitizeForTerminal(v) as T;
+  if (Array.isArray(v)) return v.map(sanitizeDeep) as T;
+  if (typeof v === 'object' && v !== null) {
+    return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, sanitizeDeep(x)])) as T;
+  }
+  return v;
 }

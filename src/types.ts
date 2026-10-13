@@ -18,7 +18,19 @@ export const AGENT_LABELS: Record<AgentId, string> = {
 export type ConfigScope =
   | 'project' // リポジトリで共有される設定（.claude/settings.json, .mcp.json, .cursor/*）
   | 'project-local' // 個人のプロジェクト設定（.claude/settings.local.json, ~/.claude.json の projects[...]）
-  | 'user'; // ユーザー全体の設定（~/.claude/settings.json, ~/.cursor/*）
+  | 'user' // ユーザー全体の設定（~/.claude/settings.json, ~/.cursor/*）
+  | 'managed'; // 組織の管理設定（managed-settings.json など）。最優先で、利用者は上書きできない
+
+/** 設定の優先順位（小さいほど優先）。Claude Code: managed > local > project > user */
+export const SCOPE_PRECEDENCE: Record<ConfigScope, number> = { managed: 0, 'project-local': 1, project: 2, user: 3 };
+
+/**
+ * ルール・設定が実際に効くかどうか。
+ * - active: 有効
+ * - ignored: エージェントが読み込まない（書式・置き場所・管理設定による無効化）
+ * - overridden: 有効だが、deny / ask ルールや優先度の高い設定に打ち消される
+ */
+export type EffectStatus = 'active' | 'ignored' | 'overridden';
 
 export type ConfigKind =
   | 'claude-settings'
@@ -26,6 +38,7 @@ export type ConfigKind =
   | 'claude-global-state'
   | 'cursor-mcp'
   | 'cursor-permissions'
+  | 'cursor-cli'
   | 'unsupported';
 
 export type FileStatus =
@@ -88,6 +101,9 @@ export interface PermissionRule {
   source: SourceRef;
   /** 権限モデル上の注意（例: Cursor の autoRun は強制力のないヒント） */
   note?: Text;
+  status: EffectStatus;
+  /** status が active 以外のときの理由 */
+  statusNote?: Text;
 }
 
 /** 権限ルール以外の、権限に関わる設定値 */
@@ -98,6 +114,8 @@ export interface PermissionSetting {
   /** 表示用の値。秘密情報になりうる値は入れない */
   value: string | Text;
   source: SourceRef;
+  status: EffectStatus;
+  statusNote?: Text;
 }
 
 export type McpTransport = 'stdio' | 'http' | 'sse' | 'unknown';
@@ -146,6 +164,10 @@ export interface Finding {
   /** 該当する設定値（秘密情報は含めない） */
   evidence?: string;
   recommendation: Text;
+  /** 根拠の設定が無効・打ち消し済みのため INFO に下げた場合の、元のレベル */
+  originalLevel?: RiskLevel;
+  /** 根拠の設定が実際に効くかどうかの説明 */
+  effectNote?: Text;
 }
 
 /** 解析できなかった項目 */

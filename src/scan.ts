@@ -12,7 +12,8 @@ import {
   type ClaudeMcpApprovalHints,
 } from './parsers/claude.js';
 import type { ParseContext } from './parsers/common.js';
-import { parseCursorMcpJson, parseCursorPermissions } from './parsers/cursor.js';
+import { parseCursorCli, parseCursorMcpJson, parseCursorPermissions } from './parsers/cursor.js';
+import { applyPrecedence, effectiveEnableAll } from './precedence.js';
 import { runRules } from './rules/index.js';
 import type { AgentId, ConfigFile, LocalizedScanResult, ParsedConfig, RiskLevel, ScanResult } from './types.js';
 import { parseJsonc } from './util/jsonc.js';
@@ -28,6 +29,8 @@ export interface ScanOptions {
   includeGlobal?: boolean;
   /** ホームディレクトリ（テスト用に差し替え可能） */
   home?: string;
+  /** Claude Code の管理設定ディレクトリ（テスト用に差し替え可能。既定は OS ごとの場所） */
+  managedDir?: string;
 }
 
 export const DISCLAIMER = tx(
@@ -53,14 +56,17 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
   const includeGlobal = opts.includeGlobal ?? false;
 
   const st = await fs.stat(root).catch(() => undefined);
-  if (!st?.isDirectory()) throw new AgentScopeError(tx(`対象ディレクトリが見つかりません: ${root}`, `Target directory not found: ${root}`));
+  if (!st) throw new AgentScopeError(tx(`対象ディレクトリが見つかりません: ${root}`, `Target directory not found: ${root}`));
+  if (!st.isDirectory()) throw new AgentScopeError(tx(`ディレクトリではありません: ${root}`, `Not a directory: ${root}`));
   const realRoot = await fs.realpath(root);
 
   const files: ConfigFile[] = [];
   const parsed: ParsedConfig[] = [];
   const approvalHints: ClaudeMcpApprovalHints[] = [];
 
-  for (const c of discoverCandidates({ root, home, agents, includeGlobal })) {
+  const managedDir = opts.managedDir ?? defaultManagedDir();
+  const candidates = await discoverCandidates({ root, home, agents, includeGlobal, managedDir });
+  for (const c of candidates) {
     const displayPath = toDisplayPath(c.path, root, home);
     const read = await safeReadFile(c.path, { confineTo: c.confineTo });
     if (!read.ok && read.missing) continue; // 存在しないファイルはエラーにせずスキップ
@@ -94,7 +100,15 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     }
 
     const ctx: ParseContext = { agent: c.agent, scope: c.scope, file: displayPath, root };
-    const result = parseByKind(c, ctx, json.value, projectKeyCandidates(root, realRoot));
+    let result: ParsedConfig;
+    try {
+      result = parseByKind(c, ctx, json.value, projectKeyCandidates(root, realRoot));
+    } catch {
+      // 想定外の入力でパーサーが失敗しても、他のファイルの分析は続ける。例外の内容は設定値を含みうるため出さない
+      file.status = 'parse-error';
+      file.reason = tx('解析中に予期しないエラーが発生したため、このファイルは分析していません', 'An unexpected error occurred while parsing, so this file was not analyzed');
+      continue;
+    }
     parsed.push(result);
     if ('approvalHints' in result) approvalHints.push(result.approvalHints as ClaudeMcpApprovalHints);
   }
@@ -108,9 +122,10 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     .flatMap((p) => p.unparsed)
     .sort((a, b) => (fileOrder.get(a.file) ?? 0) - (fileOrder.get(b.file) ?? 0) || a.pointer.localeCompare(b.pointer, 'en', { numeric: true }));
   const secretHits = parsed.flatMap((p) => p.secretHits);
-  resolveClaudeMcpApproval(mcpServers, approvalHints);
+  applyPrecedence(rules, settings);
+  resolveClaudeMcpApproval(mcpServers, approvalHints, effectiveEnableAll(settings) ?? null);
 
-  const findings = runRules({ agents, files, rules, settings, mcpServers, secretHits });
+  const findings = runRules({ agents, files, rules, settings, mcpServers, secretHits, home });
   const counts: Record<RiskLevel, number> = { HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 };
   for (const f of findings) counts[f.level]++;
 
@@ -128,6 +143,13 @@ export async function scan(opts: ScanOptions = {}): Promise<ScanResult> {
     summary: { files: files.length, rules: rules.length, mcpServers: mcpServers.length, findings: counts },
     disclaimer: DISCLAIMER,
   };
+}
+
+/** Claude Code の管理設定ファイルの置き場所 https://code.claude.com/docs/en/managed-settings */
+export function defaultManagedDir(platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'darwin') return '/Library/Application Support/ClaudeCode';
+  if (platform === 'win32') return 'C:\\Program Files\\ClaudeCode';
+  return '/etc/claude-code';
 }
 
 /** 文言を1つの言語に確定させる。lang は JSON 出力にも含める */
@@ -148,6 +170,8 @@ function parseByKind(c: Candidate, ctx: ParseContext, json: unknown, projectKeys
       return parseCursorMcpJson(ctx, json);
     case 'cursor-permissions':
       return parseCursorPermissions(ctx, json);
+    case 'cursor-cli':
+      return parseCursorCli(ctx, json);
     case 'unsupported':
       throw new Error('unreachable');
   }
