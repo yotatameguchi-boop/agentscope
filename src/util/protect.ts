@@ -55,18 +55,20 @@ function maskVisible(input: string): string {
   // 4. ランダム性の高い長い文字列（形式に特徴のないトークン）。大文字・小文字・数字をすべて含み、
   //    1文字あたりのエントロピーが高いものだけを対象にする（16進のハッシュや UUID、パスは対象外）
   //    公開鍵・証明書のブロックの中は対象にしない
-  s = outsidePublicBlocks(s, (part) =>
+  s = outsidePublicBlocks(s, (part) => {
+    const urls = new UrlLocator(part);
     // = は base64 の末尾の詰め物としてだけ含める（KEY=値 をキー名ごと1つのトークンにしないため）
-    part.replace(/[A-Za-z0-9+/_-]{16,}={0,2}/g, (token: string, offset: number, whole: string) => {
-      if (isPublicToken(token, whole.slice(Math.max(0, offset - CONTEXT_LOOKBACK), offset), urlPrefixBefore(whole, offset))) return token;
+    return part.replace(/[A-Za-z0-9+/_-]{16,}={0,2}/g, (token: string, offset: number) => {
+      const urlPrefix = urls.prefixAt(offset);
+      if (isPublicToken(token, part.slice(Math.max(0, offset - CONTEXT_LOOKBACK), offset), urlPrefix)) return token;
       // URL の中や、単語が大半を占めるパス（/private/var/folders/…/T/agentscope-test-Ab3dE5/…）は、/ の区切りごとに判定する。
       // 単語をほとんど含まない / 入りの値（AWS のシークレットキーや base64）は、全体を1つの値として判定する
-      if (token.includes('/') && (looksLikePath(token) || inUrlBefore(whole, offset))) {
+      if (token.includes('/') && (looksLikePath(token) || urlPrefix.includes('://'))) {
         return token.split('/').map((seg) => (looksRandom(seg) ? MASK : seg)).join('/');
       }
       return looksRandom(token) ? MASK : token;
-    }),
-  );
+    });
+  });
   // 5. curl -u user:pass
   s = s.replace(/(^|\s)(-u|--user)(\s+)(['"]?)([^\s:'"]+):([^\s'"`]+)\4/g, (m, pre, flag, sp, q, user, pass) =>
     /^\$\{?[A-Za-z_][\w:]*\}?$/.test(pass) || /^(?:pass(?:word)?|secret|x+|\*+|<[^>]*>?)$/i.test(pass) ? m : `${pre}${flag}${sp}${q}${user}:${MASK}${q}`,
@@ -131,17 +133,31 @@ const PUBLIC_CONTENT_URL = /^https?:\/\/(?:www\.|m\.)?(?:youtube\.com|youtu\.be|
 /** URL をさかのぼって調べる最大の長さ。トークンごとに先頭まで戻ると、長い入力で二乗の時間になる */
 const URL_LOOKBACK = 4096;
 
-/** offset の直前の、空白を含まない部分（最大 URL_LOOKBACK 文字） */
-function urlPrefixBefore(whole: string, offset: number): string {
-  const limit = Math.max(0, offset - URL_LOOKBACK);
-  let start = offset;
-  while (start > limit && !/[\s<>"'`()[\]]/.test(whole[start - 1]!)) start--;
-  return whole.slice(start, offset);
-}
+/**
+ * トークンが URL の中にあるかを調べる。文字列ごとに "://" の位置を1回だけ求めておき、
+ * トークンごとにさかのぼって探さない（トークンが多い長い文字列で二乗の時間になるのを防ぐ）。
+ * トークンは位置の昇順に渡される前提で、直前の "://" を指す位置だけを進める
+ */
+class UrlLocator {
+  private readonly schemes: number[] = [];
+  private i = -1;
 
-/** offset の直前（空白まで、最大 URL_LOOKBACK 文字）に "://" があれば、URL の中とみなす */
-function inUrlBefore(whole: string, offset: number): boolean {
-  return urlPrefixBefore(whole, offset).includes('://');
+  constructor(private readonly text: string) {
+    for (let p = text.indexOf('://'); p !== -1; p = text.indexOf('://', p + 3)) this.schemes.push(p);
+  }
+
+  /** offset の直前にある URL の、スキームの先頭から offset までの部分。URL の中でなければ空文字 */
+  prefixAt(offset: number): string {
+    while (this.i + 1 < this.schemes.length && this.schemes[this.i + 1]! < offset) this.i++;
+    const scheme = this.i >= 0 ? this.schemes[this.i]! : -1;
+    if (scheme < 0 || offset - scheme > URL_LOOKBACK) return '';
+    // スキーム名の先頭まで戻る（https など、英数字と + . -）
+    let start = scheme;
+    while (start > 0 && /[A-Za-z0-9+.-]/.test(this.text[start - 1]!)) start--;
+    const prefix = this.text.slice(start, offset);
+    // 空白や区切り文字をまたいでいれば、同じ URL ではない
+    return /[\s<>"'`()[\]]/.test(prefix) ? '' : prefix;
+  }
 }
 
 /** / で区切った断片を、さらに - _ . で分けたとき、単語（2 文字以上の英小文字、先頭だけ大文字の単語）が文字数の 4 割以上を占めるか */
