@@ -3,7 +3,7 @@
  *
  * 本物の鍵をリポジトリに置かないよう、ダミーの値は固定シードの乱数で実行時に組み立てる。
  * - positives: 伏せるべき秘密情報（形式 × 置き場所）
- * - negatives: 伏せてはいけない、設定によく出てくる無害な文字列
+ * - 伏せてはいけない無害な文字列は negatives.ts にある
  */
 
 /** 固定シードの擬似乱数（mulberry32） */
@@ -137,59 +137,3 @@ export const PLACEMENTS: Placement[] = [
   { name: 'zero-width-split', hinted: false, render: (x) => { const v = x.text ?? x.value; const i = Math.floor(v.length / 2); return v.slice(0, i) + '\u200b' + v.slice(i); } },
   { name: 'zero-width-many', hinted: true, render: (x) => `export SERVICE_TOKEN=${[...x.value].join('\u2060')}` },
 ];
-
-/** 伏せてはいけない、設定によく出てくる文字列 */
-export function negatives(seed = 2): Array<{ kind: string; text: string }> {
-  const r = rng(seed);
-  const n = (kind: string, text: string) => ({ kind, text });
-  return [
-    n('git-sha', gen(r, HEX, 40)),
-    n('git-short-sha', gen(r, HEX, 7)),
-    n('uuid', `${gen(r, HEX, 8)}-${gen(r, HEX, 4)}-4${gen(r, HEX, 3)}-a${gen(r, HEX, 3)}-${gen(r, HEX, 12)}`),
-    n('docker-digest', `node@sha256:${gen(r, HEX, 64)}`),
-    n('npm-integrity', `sha512-${gen(r, B64, 86)}==`),
-    n('webpack-chunk', `dist/main.${gen(r, HEX, 8)}.js`),
-    n('path', '/Users/someone/Projects/AgentScope2/src/index.ts'),
-    n('windows-path', 'C:\\Users\\Someone\\AppData\\Roaming\\Code\\User\\settings.json'),
-    n('tmp-path', `/private/var/folders/gv/${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789_', 28)}/T/agentscope-test-${gen(r, ALNUM, 6)}`),
-    n('package-spec', '@modelcontextprotocol/server-github@2025.4.8'),
-    n('scoped-package', 'npx -y @anthropic-ai/claude-code@2.1.300'),
-    n('model-id', 'claude-opus-5-5'),
-    n('model-id-dated', 'gpt-4o-2024-08-06'),
-    n('mcp-tool', 'mcp__github__create_pull_request_review_comment'),
-    n('bash-rule', 'Bash(npm run test:integration -- --runInBand)'),
-    n('read-rule', 'Read(./src/**/*.{ts,tsx})'),
-    n('camel-identifier', 'MyVeryLongServerName2024Production'),
-    n('java-class', 'org.springframework.boot.autoconfigure.SpringBootApplication'),
-    n('k8s-pod', `web-${gen(r, 'abcdef0123456789', 9)}-${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789', 5)}`),
-    n('aws-arn', 'arn:aws:iam::123456789012:role/GitHubActionsDeployRole2024'),
-    n('s3-url', 'https://my-bucket-2024.s3.ap-northeast-1.amazonaws.com/releases/v1.2.3/app.zip'),
-    n('wikimedia-file', 'https://upload.wikimedia.org/wikipedia/commons/6/61/Miejscu-pracy-koparka-budowlanych-3741.webm'),
-    n('github-url', 'https://github.com/yotatameguchi-boop/agentscope/blob/5b4713fe385d388d3f25d82909465bbe9c3e8b6c/src/scan.ts'),
-    n('email', 'yota.example+agentscope@example.co.jp'),
-    n('ipv6', 'fe80::1ff:fe23:4567:890a'),
-    n('semver-range', '>=22.12.0 <25'),
-    n('cron', '0 */6 * * 1-5'),
-    n('japanese', '本番環境ではトークンを環境変数から読み込みます'),
-    n('env-reference', 'API_KEY=${API_KEY}'),
-    n('env-default-ref', 'TOKEN=${TOKEN:-${FALLBACK_TOKEN}}'),
-    n('placeholder', 'ANTHROPIC_API_KEY=<your-api-key>'),
-    n('gha-secret-ref', 'ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}'),
-    n('pkce-like-word', 'PlaywrightTestRunnerConfiguration'),
-    n('base64-small-icon', 'data:image/png;base64,iVBORw0KGgo='),
-    n('version-hash-mix', 'v2.1.300-rc.1+build.20261014'),
-    n('google-analytics', 'G-ABCDE12345'),
-    n('sentry-public-dsn-host', 'https://o123456.ingest.sentry.io/4504'),
-    n('hash-flag', `--expected-sha256 ${gen(r, HEX, 64)}`),
-    n('long-kebab', 'claude-code-security-review-github-action-workflow-v2'),
-    n('rule-description', 'Bash(git log --oneline --since=2024-01-01 --author=yota)'),
-    // CI の macOS で見つかった誤検知（一時ディレクトリのパス）と、その仲間
-    n('macos-tmp-path', `/private/var/folders/${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789_', 2)}/${gen(r, 'abcdefghijklmnopqrstuvwxyz0123456789_', 28)}/T/agentscope-test-${gen(r, ALNUM, 6)}/com.anthropic.claudecode.plist`),
-    n('linux-tmp-path', `/tmp/tmp.${gen(r, ALNUM, 10)}/work/${gen(r, ALNUM, 8)}/settings.json`),
-    n('windows-tmp-path', `C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\agentscope-test-${gen(r, ALNUM, 6)}\\.claude\\settings.json`),
-    n('pnpm-store-path', `node_modules/.pnpm/@types+node@26.6.5_${gen(r, HEX, 10)}/node_modules/@types/node/index.d.ts`),
-    n('nix-store-path', `/nix/store/${gen(r, 'abcdfghijklmnpqrsvwxyz0123456789', 32)}-nodejs-24.18.1/bin/node`),
-    n('go-mod-cache', `/home/runner/go/pkg/mod/github.com/aws/aws-sdk-go-v2@v1.32.${Math.floor(r() * 9)}/config/doc.go`),
-    n('vscode-extension-path', `~/.vscode/extensions/anthropic.claude-code-2.1.300-darwin-arm64/resources/${gen(r, ALNUM, 6)}/icon.svg`),
-  ];
-}

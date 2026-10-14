@@ -1,16 +1,19 @@
 // 実データでの誤検知の計測。指定したディレクトリ内の設定ファイル・ロックファイル・ワークフローなどから
 // 文字列を集め、出力保護で変更されたものを数える。元の文字列は表示しない（本物の秘密情報を含みうるため）。
-// 使い方: node scripts/eval-real.mjs <dir>...   （先に npm run build が必要）
+// 使い方: node scripts/eval-real.mjs [--node-modules] <dir>...   （先に npm run build が必要）
+//   --node-modules: node_modules の中も読み、元の文字列も表示する（公開パッケージの内容なので表示してよい。それ以外は伏せた後だけを表示する）
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { maskSecrets } from '../dist/util/protect.js';
 
 const FILES = /^(?:package(?:-lock)?\.json|tsconfig.*\.json|settings(?:\.local)?\.json|\.mcp\.json|mcp\.json|.*\.ya?ml|Makefile|Dockerfile|\.env\.example|README(?:\.ja)?\.md|CLAUDE\.md)$/;
-const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.venv', 'venv', '__pycache__']);
+const args = process.argv.slice(2);
+const NODE_MODULES = args.includes('--node-modules');
+const SKIP = new Set(['.git', 'dist', 'build', '.next', 'coverage', '.venv', 'venv', '__pycache__', ...(NODE_MODULES ? [] : ['node_modules'])]);
 const strings = [];
 
 function walk(dir, depth) {
-  if (depth > 6) return;
+  if (depth > (NODE_MODULES ? 12 : 6)) return;
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of entries) {
@@ -31,15 +34,19 @@ function collect(v, file) {
   else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { strings.push({ file, s: k }); collect(x, file); }
 }
 
-for (const d of process.argv.slice(2)) walk(path.resolve(d), 0);
+for (const d of args.filter((a) => !a.startsWith('--'))) walk(path.resolve(d), 0);
 const changed = strings.filter((x) => maskSecrets(x.s) !== x.s);
 console.log(`strings: ${strings.length}  changed: ${changed.length}  (${((1 - changed.length / strings.length) * 100).toFixed(3)}% unchanged)`);
 const byFile = new Map();
 for (const c of changed) byFile.set(path.basename(c.file), (byFile.get(path.basename(c.file)) ?? 0) + 1);
 console.log('changed by file name:', Object.fromEntries(byFile));
 // 伏せた後の文字列だけを、前後を短くして表示する
-for (const c of changed.slice(0, 40)) {
+const limit = Number(process.env.SHOW ?? 40);
+for (const c of changed.slice(0, limit)) {
   const after = maskSecrets(c.s);
   const i = after.indexOf('[REDACTED]');
-  console.log(`  ${path.basename(c.file)}: …${after.slice(Math.max(0, i - 50), i + 60).replace(/\s+/g, ' ')}…`);
+  const pub = c.file.includes(`${path.sep}node_modules${path.sep}`);
+  const rel = pub ? c.file.slice(c.file.lastIndexOf('node_modules')) : path.basename(c.file);
+  console.log(`  ${rel}: …${after.slice(Math.max(0, i - 50), i + 60).replace(/\s+/g, ' ')}…`);
+  if (pub && NODE_MODULES) console.log(`      original: …${c.s.slice(Math.max(0, i - 50), i + 80).replace(/\s+/g, ' ')}…`);
 }

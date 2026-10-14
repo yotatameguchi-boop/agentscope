@@ -21,8 +21,12 @@ export const VALUE_PATTERNS: ValuePattern[] = [
   { label: tx('OpenAI APIキー', 'an OpenAI API key'), re: /(?<![A-Za-z0-9])sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
   { label: tx('GitHub トークン', 'a GitHub token'), re: /(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/ },
   { label: tx('GitLab トークン', 'a GitLab token'), re: /(?<![A-Za-z0-9])glpat-[A-Za-z0-9_-]{20,}/ },
+  { label: tx('Slack アプリトークン', 'a Slack app token'), re: /(?<![A-Za-z0-9])xapp-\d-[A-Za-z0-9]{8,}-\d{8,}-[A-Za-z0-9]{32,}/ },
+  { label: tx('Discord ボットトークン', 'a Discord bot token'), re: /(?<![A-Za-z0-9_.-])[A-Za-z0-9]{24,28}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}(?![A-Za-z0-9_-])/ },
   { label: tx('Slack トークン', 'a Slack token'), re: /(?<![A-Za-z0-9])xox[abposr]-[A-Za-z0-9-]{10,}/ },
-  { label: tx('AWS アクセスキーID', 'an AWS access key ID'), re: /(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  // AWS 公式ドキュメントの例（AKIAIOSFODNN7EXAMPLE）は除く
+  { label: tx('AWS アクセスキーID', 'an AWS access key ID'), re: /(?<![A-Za-z0-9])(?:AKIA|ASIA)(?![0-9A-Z]{9}EXAMPLE\b)[0-9A-Z]{16}\b/ },
+  { label: tx('Stripe Webhook シークレット', 'a Stripe webhook secret'), re: /(?<![A-Za-z0-9])whsec_[A-Za-z0-9]{24,}/ },
   { label: tx('Google APIキー', 'a Google API key'), re: /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}/ },
   { label: tx('Stripe シークレットキー', 'a Stripe secret key'), re: /(?<![A-Za-z0-9])[sr]k_live_[0-9A-Za-z]{20,}/ },
   { label: tx('npm トークン', 'an npm token'), re: /(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}/ },
@@ -30,7 +34,7 @@ export const VALUE_PATTERNS: ValuePattern[] = [
   // 鍵の本体まで含めて1つの値として扱う（改行が実際の改行でも、JSON の \n でもよい）
   { label: tx('秘密鍵', 'a private key'), re: /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----)?/ },
   { label: tx('JWT', 'a JWT'), re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
-  { label: tx('Bearer トークン', 'a Bearer token'), re: /(?<![A-Za-z0-9])Bearer\s+(?!\$)[A-Za-z0-9._~+/-]{8,}=*/ },
+  { label: tx('Bearer トークン', 'a Bearer token'), re: /(?<![A-Za-z0-9])Bearer\s+(?!\$|<|YOUR|your|xxx|XXX|\*\*\*|TOKEN\b|token\b)[A-Za-z0-9._~+/-]{8,}=*/ },
   { label: tx('Shopify トークン', 'a Shopify token'), re: /(?<![A-Za-z0-9])shp(?:at|ss|ca|pa)_[0-9a-fA-F]{32}(?![A-Za-z0-9])/ },
   { label: tx('Pulumi トークン', 'a Pulumi token'), re: /(?<![A-Za-z0-9])pul-[0-9a-f]{40}(?![A-Za-z0-9])/ },
   { label: tx('DigitalOcean トークン', 'a DigitalOcean token'), re: /(?<![A-Za-z0-9])do[opr]_v1_[0-9a-f]{64}(?![A-Za-z0-9])/ },
@@ -95,8 +99,19 @@ export function isReferenceOrPlaceholder(value: string): boolean {
   if (/^<[^>]*>?$/.test(v) || /^\{\{.*\}\}$/.test(v)) return true; // <YOUR_TOKEN>、{{ テンプレート }}
   // 「あなたのパスワード」「ここにトークン」のように、日本語・中国語だけで書かれた値は説明用の仮の値
   if (/^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー・（）()「」\s]+$/u.test(v)) return true;
+  // コード中の参照・呼び出し（process.env.GITHUB_TOKEN、config.apiKey、request.headers.get(...)、matchToToken(match)）
+  if (/^(?:process|import\.meta|os|env|config|settings|secrets|context|request|req|res|ctx|this|self|window|globalThis|Deno|Bun|vars|inputs|github|steps|needs|matrix|props|options|opts|args)\.[\w$.[\]'"]+\(?$/.test(v)) return true;
+  if (/^[A-Za-z_$][\w$.]*\(/.test(v)) return true;
+  // 定数名（SERVICE_KEY、BLOB_TOKEN）、型（InjectionToken<T>、string>1）、メンバー参照（data.nextToken）
+  if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v) && /[A-Z]{2}/.test(v)) return true;
+  if (/^[A-Za-z_$][\w$]*\s*[<>]/.test(v)) return true;
+  if (/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(v) && !/[0-9]{3}/.test(v)) return true;
+  // 説明用の値（someuser / somepassword / sometoken）
+  if (/^some[_-]?(?:pass(?:word)?|secret|token|key|value|user)/i.test(v)) return true;
+  // 接頭辞の後ろを x や * で埋めた仮の値（sk-xxxxxxxx、ghp_************、sk-ant-...）
+  if (/^(?:[A-Za-z0-9]{1,10}[-_.]){1,3}(?:x{4,}|X{4,}|\*{4,}|0{8,}|\.{3,}|<[^>]*>)$/.test(v)) return true;
   // よく使われる仮の値（.env.example や README に書かれるもの）
-  if (/^(?:x+|\*+|\.+|your[_-].*|.*[_-]here|change[_-]?me(?:[_-].*)?|replace[_-]?me|to[_-]?be[_-]?(?:modified|changed|replaced)|placeholder|dummy.*|example.*|sample.*|redacted|todo|tbd|secret|password|passw0rd|token|test|testing)$/i.test(v)) return true;
+  if (/^(?:x+|\*+|\.+|your.*|.*(?:[_-]|goes)here|change[_-]?me(?:[_-].*)?|replace[_-]?me|to[_-]?be[_-]?(?:modified|changed|replaced)|placeholder|dummy.*|example.*|sample.*|redacted|todo|tbd|secret|password|passw0rd|token|test|testing)$/i.test(v)) return true;
   if (/^(?:op|vault|keychain|aws-sm|gcp-sm):\/\//i.test(v)) return true; // シークレットマネージャー参照
   return false;
 }
@@ -114,7 +129,7 @@ function matchValuePattern(value: string): { label: Text; part: string } | undef
  * 長さでは判定しない（admin:pw123@ のような短い本物のパスワードを見逃さないため）
  */
 export function isUrlPasswordPlaceholder(pw: string): boolean {
-  return /^(?:\$\{?[A-Za-z_][\w:]*\}?|\$\{\{[^{}]*\}\}|password|passwd|pass|postgres|mysql|root|admin|changeme|secret|example|x+|\*+|<[^>]*>|\[[^\]]*\]|\.\.\.)$/i.test(pw);
+  return /^(?:\$\{?[A-Za-z_][\w:]*\}?|\$\{\{[^{}]*\}\}|password|passwd|pass|postgres|mysql|root|admin|changeme|secret|example|some[_-]?pass(?:word)?|your[_-]?pass(?:word)?|x+|\*+|<[^>]*>|\[[^\]]*\]|\.\.\.)$/i.test(pw);
 }
 
 /** 壊れた % エンコードでも例外を投げずにデコードする（失敗したら元の文字列を返す） */
