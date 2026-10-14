@@ -30,6 +30,7 @@ export function negativeSet(seed: number): Negative[] {
   const out: Negative[] = [];
   const add = (group: string, kind: string, text: string, tier: Tier = 'keep') => out.push({ group, kind, tier, text });
   const int = (n: number) => Math.floor(r() * n);
+  const pick = <T,>(rand: () => number, xs: T[]) => xs[Math.floor(rand() * xs.length)]!;
   const uuid = () => `${gen(r, HEX, 8)}-${gen(r, HEX, 4)}-4${gen(r, HEX, 3)}-a${gen(r, HEX, 3)}-${gen(r, HEX, 12)}`;
 
   // ---- ハッシュ・ダイジェスト・チェックサム
@@ -216,6 +217,27 @@ export function negativeSet(seed: number): Negative[] {
   add('text', 'data-uri-svg', `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/></svg>').toString('base64')}`, 'tolerable');
   add('text', 'base64-json', `eyJuYW1lIjoiYWdlbnRzY29wZSIsInZlcnNpb24iOiIwLjEuMCJ9`, 'tolerable');
   add('text', 'version-list', '22.12.0, 24.18.1, 26.0.0-nightly20261001');
+
+  // ---- 公開データ（node_modules）で見つかった誤検知の型
+  add('code', 'crypto-class-new', `kem: new Dhkem${pick(r, ['P256', 'P384', 'X25519', 'X448'])}HkdfSha${pick(r, ['256', '384', '512'])}(),`);
+  add('code', 'crypto-class-import', `import { DhkemX25519HkdfSha256 } from "@hpke/dhkem-x25519";`);
+  add('code', 'method-call', 'The `isIPv4MappedAddress()` method returns true for IPv4-mapped addresses.');
+  add('code', 'identifier-list', '  Aes256GcmEncryptor,');
+  add('code', 'basic-word', '- **Smoke Tests** - Basic import/require tests for CommonJS and ESM');
+  add('code', 'basic-auth-doc', '| auth | string | Basic authentication (`user:password`) for the Authorization header |');
+  add('code', 'same-name', '  privateKey: privateKey,');
+  add('code', 'di-token', `  token: "${pick(r, ['SingletonFoo', 'ContainerScopedFoo', 'theirClass', 'LoggerService'])}",`);
+  add('code', 'fetch-credentials', `fetch(url, { credentials: '${pick(r, ['same-origin', 'include', 'omit'])}' })`);
+  add('code', 'shell-pwd', `parse('beep --boop="$PWD"', { PWD: '/home/robot' })`);
+  add('code', 'objc-cast', 'didUpdatePushCredentials:(PKPushCredentials *)credentials forType:(PKPushType)type');
+  add('code', 'objc-arg', 'didUpdatePushCredentials:credentials forType:type');
+  add('public-key', 'gpg-key-id', `https://keyserver.ubuntu.com/pks/lookup?op=vindex&search=0x${gen(r, HEX, 16).toUpperCase()}`);
+  add('public-key', 'travis-secure', `  - secure: ${gen(r, B64, 80)}=`);
+  add('public-key', 'vapid-pubkey', `web-push send-notification --vapid-pubkey=B${gen(r, URLSAFE, 86)}`);
+  add('public-key', 'webpush-p256dh', `"p256dh": "B${gen(r, URLSAFE, 86)}"`);
+  add('url', 'github-advisory', `https://github.com/advisories/GHSA-${gen(r, LOWER_NUM, 4)}-${gen(r, LOWER_NUM, 4)}-${gen(r, LOWER_NUM, 4)}`);
+  add('url', 'youtube-channel', `https://www.youtube.com/channel/UC${gen(r, URLSAFE, 22)}`);
+  add('url', 'signed-url-time', `https://cdn.example.com/a.png?token-time=${gen(r, '0123456789', 10)}`);
 
   return out;
 }

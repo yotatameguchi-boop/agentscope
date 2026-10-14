@@ -47,7 +47,8 @@ export const VALUE_PATTERNS: ValuePattern[] = [
   { label: tx('Terraform Cloud トークン', 'a Terraform Cloud token'), re: /(?<![A-Za-z0-9])[A-Za-z0-9]{14}\.atlasv1\.[A-Za-z0-9_=-]{60,}/ },
   { label: tx('Twilio APIキー', 'a Twilio API key'), re: /(?<![A-Za-z0-9])SK[0-9a-f]{32}(?![A-Za-z0-9])/ },
   { label: tx('Mailgun APIキー', 'a Mailgun API key'), re: /(?<![A-Za-z0-9])key-[0-9a-f]{32}(?![A-Za-z0-9])/ },
-  { label: tx('Basic 認証の資格情報', 'Basic auth credentials'), re: /(?<![A-Za-z0-9])Basic\s+[A-Za-z0-9+/]{12,}={0,2}/ },
+  // base64 は大文字・小文字・数字が混ざる。「Basic authentication」「Basic import/require」のような英単語は除く
+  { label: tx('Basic 認証の資格情報', 'Basic auth credentials'), re: /(?<![A-Za-z0-9])Basic\s+(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*(?:[0-9+]|=))[A-Za-z0-9+/]{12,}={0,2}/ },
   { label: tx('Azure の接続文字列', 'an Azure connection string'), re: /(?<![A-Za-z0-9])(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{20,}/ },
   { label: tx('SendGrid APIキー', 'a SendGrid API key'), re: /(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/ },
   { label: tx('Discord / Telegram ボットトークン', 'a bot token'), re: /(?<![A-Za-z0-9])\d{8,10}:AA[A-Za-z0-9_-]{30,}/ },
@@ -55,13 +56,13 @@ export const VALUE_PATTERNS: ValuePattern[] = [
 
 // キー名から秘密情報を推定する
 const SECRET_KEY_RE_RAW =
-  /(?:^|[_\-.])(?:api[_-]?key|apikey|secret|token|password|passwd|pwd|credential|credentials|private[_-]?key|access[_-]?key|auth|authorization|session[_-]?key|client[_-]?secret)(?:$|[_\-.])/i;
+  /(?:^|[_\-.])(?:api[_-]?key|apikey|secret|token|password|passwd|passphrase|pwd|credential|credentials|private[_-]?key|access[_-]?key|auth|authorization|session[_-]?key|client[_-]?secret)(?:$|[_\-.])/i;
 
 /**
  * 秘密情報の「名前」や「置き場所」を指すキー（secret-id、AUTH_URL、PASSWORD_FILE、apiKeyHelper など）。
  * 値は秘密情報そのものではないので、キー名による判定から外す
  */
-const NOT_SECRET_SUFFIX_RE = /(?:^|[_\-.])(?:id|ids|name|names|arn|file|path|dir|url|uri|endpoint|host|type|ttl|length|expiry|expires|expiration|hint|header|prefix|env|var|helper|command|cmd|mode|scope|scopes|provider|method|enabled|required|count|version)$/i;
+const NOT_SECRET_SUFFIX_RE = /(?:^|[_\-.])(?:id|ids|name|names|arn|file|path|dir|url|uri|endpoint|host|type|ttl|length|expiry|expires|expiration|time|timestamp|date|hint|header|prefix|env|var|helper|command|cmd|mode|scope|scopes|provider|method|enabled|required|count|version)$/i;
 
 /** camelCase のキー名（githubToken など）も区切りとして扱う */
 export const SECRET_KEY_RE = {
@@ -102,6 +103,8 @@ export function isReferenceOrPlaceholder(value: string): boolean {
   // コード中の参照・呼び出し（process.env.GITHUB_TOKEN、config.apiKey、request.headers.get(...)、matchToToken(match)）
   if (/^(?:process|import\.meta|os|env|config|settings|secrets|context|request|req|res|ctx|this|self|window|globalThis|Deno|Bun|vars|inputs|github|steps|needs|matrix|props|options|opts|args)\.[\w$.[\]'"]+\(?$/.test(v)) return true;
   if (/^[A-Za-z_$][\w$.]*\(/.test(v)) return true;
+  // ( で始まる値はコードの式・型の書き方（(PKPushCredentials *)credentials）
+  if (v.startsWith('(')) return true;
   // 定数名（SERVICE_KEY、BLOB_TOKEN）、型（InjectionToken<T>、string>1）、メンバー参照（data.nextToken）
   if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(v) && /[A-Z]{2}/.test(v)) return true;
   if (/^[A-Za-z_$][\w$]*\s*[<>]/.test(v)) return true;
@@ -130,6 +133,29 @@ function matchValuePattern(value: string): { label: Text; part: string } | undef
  */
 export function isUrlPasswordPlaceholder(pw: string): boolean {
   return /^(?:\$\{?[A-Za-z_][\w:]*\}?|\$\{\{[^{}]*\}\}|password|passwd|pass|postgres|mysql|root|admin|changeme|secret|example|some[_-]?pass(?:word)?|your[_-]?pass(?:word)?|x+|\*+|<[^>]*>|\[[^\]]*\]|\.\.\.)$/i.test(pw);
+}
+
+/**
+ * キーに対する値が、秘密情報ではなくコードの識別子や設定の選択肢らしいか。
+ * - 値がキー名と同じ、またはキー名の一部（privateKey: privateKey、didUpdatePushCredentials:credentials）
+ * - 複数の単語をつないだ識別子（SingletonFoo、theirClass、ContainerScopedFoo）。数字を含まない
+ * - ハイフンでつないだ英小文字の単語（same-origin、no-referrer）
+ * - シェルの PWD / OLDPWD にパスが入っている（パスワードではなく作業ディレクトリ）
+ */
+export function isIdentifierValue(key: string, value: string): boolean {
+  const v = value.trim();
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '');
+  // 値がキー名と同じ（privateKey: privateKey）、またはキャメルケースのキーの末尾の単語と同じ（didUpdatePushCredentials: credentials）。
+  // WORDPRESS_DB_PASSWORD: wordpress のように、キー名の一部と同じ値は本物のパスワードでありうるので除外しない
+  if (norm(v) === norm(key)) return true;
+  const lastCamel = /([A-Z][a-z]+)$/.exec(key)?.[1];
+  if (lastCamel && /[a-z][A-Z]/.test(key) && norm(v) === norm(lastCamel)) return true;
+  // 複数の単語をつないだ識別子（SingletonFoo、theirClass）。数字を含まない
+  if (/^(?:[A-Z][a-z]+){2,}$|^[a-z]+(?:[A-Z][a-z]+)+$/.test(v)) return true;
+  // fetch の credentials などの選択肢（ハイフンでつないだ単語一般は、合言葉のパスワードでありうるので除外しない）
+  if (/^(?:same-origin|include|omit|no-referrer|no-referrer-when-downgrade|strict-origin|strict-origin-when-cross-origin|origin-when-cross-origin|unsafe-url)$/.test(v)) return true;
+  if (/^(?:OLD)?PWD$/.test(key) && /^[/~.]/.test(v)) return true;
+  return false;
 }
 
 /** 壊れた % エンコードでも例外を投げずにデコードする（失敗したら元の文字列を返す） */
@@ -167,7 +193,7 @@ function hasUrlCredential(value: string): boolean {
  */
 function findInlineSecret(value: string): { label: Text; part: string } | undefined {
   for (const m of value.matchAll(/(?:^|[\s;&|'"(?,]|(?<!\$)\{|--)(?:export\s+)?([A-Za-z_][\w.]*(?:-[\w.]+)*)['"]?\s*[=:]\s*(['"]?)(\$\{(?:[^{}\n]|\{[^{}\n]*\})*\}|[^\s'";&|)?,]+)\2/g)) {
-    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return { label: tx(`「${m[1]}」の値`, `the value of ${m[1]}`), part: secretPart(m[3]!) };
+    if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!) && !isIdentifierValue(m[1]!, m[3]!)) return { label: tx(`「${m[1]}」の値`, `the value of ${m[1]}`), part: secretPart(m[3]!) };
   }
   for (const m of value.matchAll(/(?:^|\s)--?([A-Za-z][\w-]*)\s+(['"]?)([^\s'"-][^\s'"]*)\2/g)) {
     if (SECRET_KEY_RE.test(m[1]!) && !isReferenceOrPlaceholder(m[3]!)) return { label: tx(`引数 ${m[1]} の値`, `the value of argument ${m[1]}`), part: secretPart(m[3]!) };
@@ -218,7 +244,7 @@ function detectSecret(keyName: string | undefined, value: string): { kind: Secre
   if (flag && SECRET_KEY_RE.test(flag[1]!) && !isReferenceOrPlaceholder(flag[2]!)) {
     return { kind: 'key-name', label: tx(`引数 ${flag[1]}`, `Argument ${flag[1]}`), part: secretPart(flag[2]!) };
   }
-  if (keyName && SECRET_KEY_RE.test(keyName) && !isReferenceOrPlaceholder(value)) {
+  if (keyName && SECRET_KEY_RE.test(keyName) && !isReferenceOrPlaceholder(value) && !isIdentifierValue(keyName, value)) {
     const shown = redactName(keyName);
     return { kind: 'key-name', label: tx(`「${shown}」`, `Key "${shown}"`), part: secretPart(value) };
   }

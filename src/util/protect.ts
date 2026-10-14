@@ -1,5 +1,5 @@
 import { isText } from '../i18n.js';
-import { isReferenceOrPlaceholder, isUrlPasswordPlaceholder, safeDecode, SECRET_KEY_RE, VALUE_PATTERNS } from './secrets.js';
+import { isIdentifierValue, isReferenceOrPlaceholder, isUrlPasswordPlaceholder, safeDecode, SECRET_KEY_RE, VALUE_PATTERNS } from './secrets.js';
 
 /**
  * 出力保護。秘密情報の「検出」（secrets.ts、R004 の材料）とは分け、出力する直前に必ず通す最後の防御として使う。
@@ -47,7 +47,7 @@ function maskVisible(input: string): string {
   //    キー名の前は「--」（--api-key=値）、後ろは引用符（"api_key": "値"）でもよい
   //    値が ${...} の参照なら、入れ子（${A:-${B}}、${{ secrets.X }}）も含めて1つの値として扱う
   s = s.replace(/((?:^|[?&;\s'"(,]|(?<!\$)\{|--))((?:export\s+)?([A-Za-z_][\w.]*(?:-[\w.]+)*)['"]?\s*[=:]\s*)(['"]?)(\$\{(?:[^{}\n]|\{[^{}\n]*\})*\}|[^\s'";&|)?#,]+)\4/g, (m, pre, assign, key, q, value, offset: number, whole: string) =>
-    SECRET_KEY_RE.test(key) && !isReferenceOrPlaceholder(value) && !isBadgeToken(whole, offset) ? `${pre}${assign}${q}${MASK}${q}` : m,
+    SECRET_KEY_RE.test(key) && !isReferenceOrPlaceholder(value) && !isIdentifierValue(key, value) && !isBadgeToken(whole, offset) ? `${pre}${assign}${q}${MASK}${q}` : m,
   );
   s = s.replace(/(^|\s)(--?([A-Za-z][\w-]*)\s+)(['"]?)([^\s'"-][^\s'"]*)\4/g, (m, pre, flag, key, q, value) =>
     SECRET_KEY_RE.test(key) && !isReferenceOrPlaceholder(value) ? `${pre}${flag}${q}${MASK}${q}` : m,
@@ -59,6 +59,8 @@ function maskVisible(input: string): string {
     const urls = new UrlLocator(part);
     // = は base64 の末尾の詰め物としてだけ含める（KEY=値 をキー名ごと1つのトークンにしないため）
     return part.replace(/[A-Za-z0-9+/_-]{16,}={0,2}/g, (token: string, offset: number) => {
+      // 直後が ( なら関数名・クラス名（new DhkemP256HkdfSha256()、isIPv4MappedAddress()）
+      if (part[offset + token.length] === '(' && /^[A-Za-z_$][\w$]*$/.test(token)) return token;
       const urlPrefix = urls.prefixAt(offset);
       if (isPublicToken(token, part.slice(Math.max(0, offset - CONTEXT_LOOKBACK), offset), urlPrefix)) return token;
       // URL の中や、単語が大半を占めるパス（/private/var/folders/…/T/agentscope-test-Ab3dE5/…）は、/ の区切りごとに判定する。
@@ -111,15 +113,18 @@ function isPublicToken(token: string, before: string, urlPrefix: string): boolea
   // data URI の中身（data:image/svg+xml;base64,…、sourceMappingURL=data:application/json;base64,…）
   if (/;base64,$/.test(before)) return true;
   // 公開コンテンツの URL のパス・クエリ（YouTube の動画・再生リスト、GitHub、npm、Wikipedia、バッジ）
-  if (PUBLIC_CONTENT_URL.test(urlPrefix)) return true;
-  // Ethereum のアドレス（公開情報）
-  if (/^0x[0-9a-fA-F]{40}$/.test(token)) return true;
+  //   ドメインの途中からトークンが始まることがある（github.com/advisories/… の「com/advisories/…」）ため、トークンも含めて判定する
+  if (urlPrefix && PUBLIC_CONTENT_URL.test(urlPrefix + token)) return true;
+  // Ethereum のアドレス、GPG の鍵 ID など 0x で始まる 16 進（公開情報）
+  if (/^0x[0-9a-fA-F]{8,64}$/.test(token)) return true;
+  // Travis CI などの暗号化済みの値（secure: …）。リポジトリの公開鍵で暗号化され、公開してよい前提の値
+  if (/(?:^|[\s{,"'-])secure["']?\s*:\s*["']?$/.test(before)) return true;
   // HTTP の ETag（W/"…"）
   if (/W\/"$/.test(before)) return true;
   // 公開情報を入れるキーの値（JWK の n / e / x / y / kid、integrity、checksum、fingerprint、公開鍵、証明書など）
   // 1 文字のキー（JWK の n / e / x / y）は、引用符で囲まれた JSON のキーのときだけ
   if (/"(?:n|e|x|y|kid|x5t(?:#S256)?|x5c)"\s*:\s*"?\[?\s*"?$/.test(before)) return true;
-  if (/(?:^|[\s{,"'])(?:integrity|checksum|digest|hash|sha\d*|etag|fingerprint|thumbprint|public_?key|publicKey|pubkey|cert(?:ificate)?|nonce|commit|revision|build_?id)["']?\s*[:=]\s*["']?\[?\s*["']?$/i.test(before)) return true;
+  if (/(?:^|[\s{,"'-])(?:integrity|checksum|digest|hash|sha\d*|etag|fingerprint|thumbprint|public_?key|publicKey|pubkey|p256dh|cert(?:ificate)?|nonce|commit|revision|build_?id)["']?\s*[:=]\s*["']?\[?\s*["']?$/i.test(before)) return true;
   // 公開してよいキー・オブジェクト ID の接頭辞（Stripe の pk_live_ / cus_ / price_、Vercel の prj_ など）
   if (/^(?:pk_(?:live|test)_|(?:cus|price|prod|pi|sub|si|in|ii|il|ch|pm|seti|evt|acct|txn|re|po|ba|card|src|plan|pyr|py|tr|or|sku|cs_test|cs_live|prj|team|dpl)_)/.test(token)) return true;
   // 公式ドキュメントの例の値（AKIAIOSFODNN7EXAMPLE、wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY）
@@ -186,6 +191,9 @@ export function looksRandom(token: string): boolean {
   if (core.length < 16) return false;
   // 大文字・小文字・数字をすべて含むこと（16進のハッシュ、UUID、小文字だけの名前を除く）
   if (!/[a-z]/.test(core) || !/[A-Z]/.test(core) || !/[0-9]/.test(core)) return false;
+  // 「大文字 1 文字 + 小文字 2 文字以上 + 末尾の数字」の塊だけでできた識別子（DhkemP256HkdfSha256、fromBase58checkSync、
+  // Aes256GcmEncryptor）。数字は塊の末尾にだけ現れる。ランダムな文字列が当てはまるのは 0.007%（約 20 万件で測定）
+  if (/^(?:[a-z]{2,}[0-9]*)?(?:[A-Z][a-z]{2,}[0-9]*|[A-Z][0-9]+)+$/.test(core)) return false;
   // 単語や数字を - / _ でつないだ名前（Miejscu-pracy-koparka-3741、Release_2024_Final、Users/Someone/Projects）は除く。
   // 各区切りが「先頭だけ大文字の単語」「全部大文字」「数字だけ」のどれかなら人が付けた名前とみなす
   if (core.split(/[-_/]/).every((seg) => /^(?:[A-Z]?[a-z]*|[A-Z]+|[0-9]+)$/.test(seg))) return false;
